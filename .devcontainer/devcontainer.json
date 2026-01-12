@@ -10,7 +10,6 @@
         "github.copilot",
         "github.copilot-chat",
         "eamodio.gitlens",
-        "golang.go",
         "redhat.vscode-yaml",
         "esbenp.prettier-vscode",
         "ms-azuretools.vscode-docker"

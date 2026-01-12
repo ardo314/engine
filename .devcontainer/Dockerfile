@@ -1,4 +1,4 @@
-FROM golang:1.25.3
+FROM mcr.microsoft.com/devcontainers/dotnet:9.0
 
 RUN apt-get update && apt-get install -y \
     git \
