@@ -1,5 +1,6 @@
 namespace Server;
 
+
 public class Foo
 {
     public string GetMessage()

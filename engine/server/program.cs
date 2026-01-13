@@ -1,5 +1,4 @@
 ﻿using Server;
-using Shared;
 
 var foo = new Foo();
 Console.WriteLine(foo.GetMessage());
