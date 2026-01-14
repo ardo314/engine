@@ -22,3 +22,9 @@ RUN curl -O https://get.helm.sh/helm-v4.0.0-linux-amd64.tar.gz \
     && tar -zxvf helm-v4.0.0-linux-amd64.tar.gz \
     && mv linux-amd64/helm /usr/local/bin/helm \
     && rm -rf helm-v4.0.0-linux-amd64.tar.gz linux-amd64
+
+# Install NATS CLI
+RUN curl -sSL https://github.com/nats-io/natscli/releases/download/v0.3.0/nats-0.3.0-linux-amd64.zip -o nats.zip \
+    && unzip nats.zip \
+    && mv nats-0.3.0-linux-amd64/nats /usr/local/bin/nats \
+    && rm -rf nats.zip nats-0.3.0-linux-amd64

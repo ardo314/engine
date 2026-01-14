@@ -11,4 +11,9 @@
     <ProjectReference Include="../libs/shared/shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="KubernetesClient" Version="18.0.13" />
+    <PackageReference Include="NATS.Net" Version="2.7.1" />
+  </ItemGroup>
+
 </Project>
