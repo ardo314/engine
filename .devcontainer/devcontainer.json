@@ -3,17 +3,17 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "forwardPorts": [8080, 4222],
+  "forwardPorts": [8080],
   "customizations": {
     "vscode": {
       "extensions": [
         "github.copilot",
         "github.copilot-chat",
         "eamodio.gitlens",
+        "golang.go",
         "redhat.vscode-yaml",
         "esbenp.prettier-vscode",
-        "ms-azuretools.vscode-docker",
-        "ms-dotnettools.csdevkit"
+        "ms-azuretools.vscode-docker"
       ]
     }
   }
