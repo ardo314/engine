@@ -1,12 +1,15 @@
-package internal
+package pkg
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 type Config[T any] struct {
 	value T
 }
 
 func NewConfig[T any]() *Config[T] {
+
 	return &Config[T]{}
 }
 

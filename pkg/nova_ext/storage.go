@@ -1,4 +1,4 @@
-package internal
+package nova_ext
 
 import (
 	"context"
