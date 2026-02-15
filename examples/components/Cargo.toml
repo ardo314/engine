@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-engine_ecs = { path = "../crates/engine_ecs" }
+engine_ecs = { path = "../../crates/engine_ecs" }

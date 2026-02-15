@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "components"
 version = "0.1.0"
+dependencies = [
+ "engine_ecs",
+]
 
 [[package]]
 name = "engine_ecs"
