@@ -1,9 +1,9 @@
 use engine_ecs::Component;
 
-pub struct Transform3D {}
+pub struct Transform3DComponent {}
 
-impl Component for Transform3D {}
+impl Component for Transform3DComponent {}
 
-pub struct Mesh {}
+pub struct MeshComponent {}
 
-impl Component for Mesh {}
+impl Component for MeshComponent {}
