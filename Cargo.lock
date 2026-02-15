@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
-name = "app"
+name = "engine_defaults"
+version = "0.1.0"
+dependencies = [
+ "engine_ecs",
+]
+
+[[package]]
+name = "engine_ecs"
 version = "0.1.0"
