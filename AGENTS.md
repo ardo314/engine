@@ -136,6 +136,29 @@ engine/
 
 ---
 
+## Architecture ↔ Code Consistency
+
+`ARCHITECTURE.md` is the **source of truth** for high-level design. Code is the
+source of truth for implementation detail. The two must stay in sync:
+
+- **Code changes → update architecture.** When you add, remove, or modify a
+  crate, NATS subject, message type, ECS concept, or system lifecycle step,
+  update the corresponding section in `ARCHITECTURE.md` to reflect the change
+  at a high level (not line-by-line — keep it conceptual).
+- **Architecture changes → update code.** When you change a design decision,
+  subject hierarchy, or crate responsibility in `ARCHITECTURE.md`, propagate
+  the change to the relevant code, types, and module docs.
+- **Check alignment before implementing.** Before starting work, read the
+  relevant sections of `ARCHITECTURE.md` and verify the planned change is
+  consistent with the documented design. If it is **not**, stop and ask the
+  user whether the change is intentional. Do not silently diverge from the
+  architecture.
+- **Flag unintentional drift.** If you discover existing code that contradicts
+  `ARCHITECTURE.md` (or vice versa), notify the user and ask how to resolve
+  the inconsistency before proceeding.
+
+---
+
 ## What NOT to Do
 
 - Do not add `unsafe` code without a `// SAFETY:` comment explaining why it
