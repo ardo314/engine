@@ -4,4 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-engine_component = { path = "../../crates/engine_component" }
+engine_component = { workspace = true }
+engine_math = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+rmp-serde = { workspace = true }
