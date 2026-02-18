@@ -16,7 +16,7 @@ Key concepts:
 - **Systems** (`engine_system`) — stateless processes, each running exactly
   one system function.
 - **NATS** — message transport between coordinator, systems, and editor.
-- **ECS** (`engine_ecs`) — core primitives: Entity, Component, Archetype,
+- **ECS** (`engine_component`) — core primitives: Entity, Component, Archetype,
   Query, System.
 
 ---
@@ -27,7 +27,7 @@ Key concepts:
 engine/
 ├── crates/
 │   ├── engine_app/       # Coordinator binary
-│   ├── engine_ecs/       # Core ECS types and traits
+│   ├── engine_component/ # Core ECS types and traits
 │   ├── engine_math/      # Math (glam re-exports + engine-specific types)
 │   ├── engine_net/       # NATS transport layer (planned)
 │   └── engine_system/   # System runtime (one system per process)

@@ -1,5 +1,5 @@
 [package]
-name = "engine_ecs"
+name = "engine_component"
 version = "0.1.0"
 edition = "2024"
 

@@ -1,4 +1,4 @@
-use engine_ecs::Component;
+use engine_component::Component;
 
 pub struct Transform3DComponent {}
 

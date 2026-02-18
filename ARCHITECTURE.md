@@ -84,7 +84,7 @@ engine/
 ├── crates/
 │   ├── engine_app/         — Coordinator binary. Entity allocation, system
 │   │                         registry, tick loop, NATS connection management.
-│   ├── engine_ecs/         — Core ECS primitives: Component trait, Entity,
+│   ├── engine_component/   — Core ECS primitives: Component trait, Entity,
 │   │                         Archetype storage, Query types, System traits.
 │   ├── engine_math/        — Math types (re-exports glam). Transform, AABB, etc.
 │   ├── engine_net/         — (new) NATS transport layer. Serialisation,

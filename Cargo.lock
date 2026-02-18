@@ -455,7 +455,7 @@ dependencies = [
 name = "components"
 version = "0.1.0"
 dependencies = [
- "engine_ecs",
+ "engine_component",
 ]
 
 [[package]]
@@ -809,7 +809,7 @@ name = "engine_app"
 version = "0.1.0"
 
 [[package]]
-name = "engine_ecs"
+name = "engine_component"
 version = "0.1.0"
 
 [[package]]
