@@ -140,47 +140,87 @@ cluster.
 Coordinator                         Systems (one process each)
     │                                  │
     │── 1. Allocate / destroy entities │
-    │── 2. Compute dependency graph    │
-    │── 3. Assign shards per system    │
+    │── 2. Build dependency graph      │
+    │── 3. Compute execution stages    │
     │                                  │
-    ├──── engine.coord.tick ──────────►│
-    ├──── engine.component.set.* ────►│
-    ├──── engine.system.schedule.* ──►│
-    │                                  │
-    │   ┌────── execute system ────┐   │
-    │   │  (one system per process)│   │
+    │   ┌─── Stage 1 (parallel) ───┐   │
+    │   │  Systems with no conflicts│   │
+    ├──►│  run concurrently         │   │
     │   └──────────────────────────┘   │
+    │── 4a. Merge stage 1 results      │
     │                                  │
-    │◄── engine.component.changed.* ──┤
-    │◄── engine.coord.tick.done ──────┤
+    │   ┌─── Stage 2 (parallel) ───┐   │
+    │   │  Next conflict-free set   │   │
+    ├──►│  runs concurrently        │   │
+    │   └──────────────────────────┘   │
+    │── 4b. Merge stage 2 results      │
     │                                  │
-    │── 4. Merge changed components    │
+    │   ┌─── Stage N … ───────────┐   │
+    │   │  ...                     │   │
+    │   └──────────────────────────┘   │
+    │── 4n. Merge stage N results      │
+    │                                  │
     │── 5. Broadcast events            │
     │── 6. Advance tick                │
     ▼                                  ▼
 ```
 
+### Scheduling Algorithm
+
+The coordinator groups systems into **stages** using their `QueryDescriptor`
+read/write sets:
+
+1. Two systems **conflict** if one writes a component type that the other
+   reads or writes. Formally, systems A and B conflict when:
+   `A.writes ∩ (B.reads ∪ B.writes) ≠ ∅` or
+   `B.writes ∩ (A.reads ∪ A.writes) ≠ ∅`.
+2. Systems that do **not** conflict with each other are placed in the same
+   stage and execute **in parallel** (as separate processes, across NATS).
+3. Systems that **do** conflict are placed in different stages that run
+   **sequentially**. The coordinator waits for all systems in a stage to
+   complete and merges their results before starting the next stage.
+4. Within a stage, systems are topologically sorted so that if ordering
+   constraints exist (explicit dependencies), they are respected by placing
+   them in earlier/later stages.
+
+### Example
+
+Given three systems:
+
+- **Physics** — reads `Transform3D`, writes `Velocity`
+- **AI** — reads `Transform3D`, writes `AiState`
+- **Movement** — reads `Velocity`, writes `Transform3D`
+
+The scheduler produces:
+
+| Stage | Systems     | Reason                                                                                                                |
+| ----- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1     | Physics, AI | No conflict — Physics writes `Velocity`, AI writes `AiState`. Both only read `Transform3D`.                           |
+| 2     | Movement    | Conflicts with Physics (`Velocity` read vs write) and with both (`Transform3D` write vs read). Must wait for stage 1. |
+
+Physics and AI run in parallel. Movement runs after both complete.
+
+### Step-by-step
+
 1. **Entity management** — The coordinator processes queued entity
    creation/destruction commands, updates the archetype table, and broadcasts
    `entity.create` / `entity.destroy` events.
-2. **Dependency graph** — Systems are topologically sorted based on their
-   read/write component sets. Independent systems execute in parallel as
-   separate processes.
-3. **Shard assignment** — For each system the coordinator determines which
-   archetype shards match the system's query. If multiple instances of a
-   system exist (queue group), the coordinator publishes one shard per
-   instance so work is distributed automatically by NATS.
-4. **Component distribution** — The coordinator publishes the relevant
-   `component.set.<system>` messages so each system instance has the data it
-   needs.
-5. **Execution** — Each system process runs on the received shard and publishes
-   `component.changed.<system>` messages for any mutated data.
-6. **Merge** — The coordinator merges the changed components back into the
-   canonical archetype storage. The dependency graph guarantees no two systems
-   write to the same component type on the same entity in the same tick, so
-   merging is a simple overwrite.
-7. **Tick complete** — The coordinator waits for all `tick.done` acks, then
-   advances to the next tick.
+2. **Dependency graph** — The coordinator builds a conflict graph from the
+   read/write sets of all registered systems.
+3. **Stage computation** — The conflict graph is partitioned into stages.
+   Systems within a stage have no conflicts and run in parallel. Stages
+   execute sequentially.
+4. **Per-stage execution** — For each stage:
+   a. The coordinator publishes `component.set.<system>` messages so each
+   system instance has the data it needs.
+   b. The coordinator publishes `system.schedule.<system>` messages.
+   c. Systems execute and publish `component.changed.<system>`.
+   d. Systems ack via `coord.tick.done`.
+   e. The coordinator **waits** for all acks in the stage, then **merges**
+   changed components into the canonical store before proceeding.
+5. **Broadcast events** — After all stages complete, the coordinator
+   broadcasts any deferred events.
+6. **Advance tick** — The coordinator increments the tick counter and loops.
 
 ---
 
@@ -195,12 +235,13 @@ responsibilities:
   archetype. Stored in-process and replicated to JetStream for persistence.
 - **System registry** — Maintains a list of all registered systems, their
   queries, and how many instances are available for each.
-- **Scheduler** — Builds a dependency DAG each tick, partitions shards across
-  system instances, publishes schedule messages.
-- **Merge & conflict resolution** — Applies changed component shards received
-  from systems. The dependency graph guarantees no two systems write to the
-  same component type on the same entity in the same tick, so merging is a
-  simple overwrite.
+- **Scheduler** — Builds a conflict graph from system read/write sets each
+  tick. Partitions systems into stages: systems within a stage run in
+  parallel (no read/write conflicts), stages run sequentially with a merge
+  barrier between them.
+- **Merge & conflict resolution** — After each stage, applies changed
+  component shards from all systems in that stage. Because systems within a
+  stage have no conflicting writes, merging is a simple overwrite.
 - **Event bus** — Provides a pub/sub event layer (over NATS) for cross-cutting
   concerns (entity lifecycle, editor notifications, etc.).
 
@@ -329,8 +370,15 @@ struct QueryDescriptor {
 The coordinator uses `QueryDescriptor` to:
 
 1. Match archetypes that satisfy the query.
-2. Build the dependency graph (read/write sets).
+2. Detect read/write conflicts between systems and partition them into
+   sequential stages (see [Tick Lifecycle](#tick-lifecycle)).
 3. Determine which component columns to ship to system instances.
+
+Two systems conflict when their access sets overlap with at least one write:
+
+- `&T` vs `&T` — **no conflict** (both read).
+- `&T` vs `&mut T` — **conflict** (read vs write).
+- `&mut T` vs `&mut T` — **conflict** (write vs write).
 
 ---
 
@@ -405,28 +453,36 @@ crash.
    conflict resolution. The coordinator is not a bottleneck because it only
    manages metadata and schedules — heavy computation happens in systems.
 
-4. **MessagePack over JSON / Protobuf** — Compact binary format with no schema
+4. **Staged scheduling** — Systems are grouped into stages based on
+   component-level read/write conflict detection. Systems with no conflicts
+   run in parallel; conflicting systems are sequentialised across stages with
+   a merge barrier in between. This maximises parallelism while guaranteeing
+   data-race freedom without locks — the schedule itself _is_ the
+   synchronisation mechanism.
+
+5. **MessagePack over JSON / Protobuf** — Compact binary format with no schema
    compilation step. Faster to serialise/deserialise than JSON, simpler to
    integrate than Protobuf in a Rust-first codebase.
 
-5. **Archetype-based storage** — Cache-friendly SoA layout is proven in ECS
+6. **Archetype-based storage** — Cache-friendly SoA layout is proven in ECS
    literature (see: Flecs, Bevy). Distributing entire archetype shards (rather
    than per-entity messages) amortises network overhead.
 
-6. **Fixed tick loop** — Deterministic simulation. Variable-rate rendering can
+7. **Fixed tick loop** — Deterministic simulation. Variable-rate rendering can
    be layered on top by interpolating between ticks.
 
 ---
 
 ## Glossary
 
-| Term            | Definition                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| **Archetype**   | A unique combination of component types.                                                   |
-| **Coordinator** | The `engine_app` process that owns world state and schedules systems.                      |
-| **Entity**      | A `u64` identifier with no inherent data.                                                  |
-| **Instance**    | One OS process running a system. Multiple instances of the same system form a queue group. |
-| **Query**       | A declarative description of component access requirements.                                |
-| **Shard**       | A contiguous slice of rows from an archetype table, sent to a system instance.             |
-| **System**      | A function that operates on entities matching a query, running as its own process.         |
-| **Tick**        | One discrete simulation step.                                                              |
+| Term            | Definition                                                                                                     |
+| --------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Archetype**   | A unique combination of component types.                                                                       |
+| **Coordinator** | The `engine_app` process that owns world state and schedules systems.                                          |
+| **Entity**      | A `u64` identifier with no inherent data.                                                                      |
+| **Instance**    | One OS process running a system. Multiple instances of the same system form a queue group.                     |
+| **Query**       | A declarative description of component access requirements.                                                    |
+| **Shard**       | A contiguous slice of rows from an archetype table, sent to a system instance.                                 |
+| **Stage**       | A group of systems with no read/write conflicts, executing in parallel. Stages run sequentially within a tick. |
+| **System**      | A function that operates on entities matching a query, running as its own process.                             |
+| **Tick**        | One discrete simulation step.                                                                                  |
