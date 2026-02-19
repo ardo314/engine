@@ -3,6 +3,20 @@
 version = 4
 
 [[package]]
+name = "accelerate_system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "components",
+ "engine_component",
+ "engine_math",
+ "engine_system",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1090,20 +1104,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
-]
-
-[[package]]
-name = "example_systems"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "components",
- "engine_component",
- "engine_math",
- "engine_system",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3021,6 +3021,19 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "print_velocity_system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "components",
+ "engine_component",
+ "engine_system",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

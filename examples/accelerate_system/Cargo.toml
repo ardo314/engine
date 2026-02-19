@@ -1,15 +1,12 @@
 [package]
-name = "example_systems"
+name = "accelerate_system"
 version = "0.1.0"
 edition = "2024"
+description = "Example system that increases velocity each tick."
 
 [[bin]]
 name = "accelerate_system"
-path = "src/accelerate.rs"
-
-[[bin]]
-name = "print_velocity_system"
-path = "src/print_velocity.rs"
+path = "src/main.rs"
 
 [dependencies]
 engine_component = { workspace = true }
