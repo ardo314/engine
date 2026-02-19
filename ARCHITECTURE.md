@@ -115,20 +115,20 @@ engine/
 All subjects are prefixed with `engine.` to namespace within a shared NATS
 cluster.
 
-| Subject                             | Direction               | Payload                                         | Purpose                                                                                                                   |
-| ----------------------------------- | ----------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `engine.coord.tick`                 | Coordinator → Systems   | `TickStart { tick_id, dt }`                     | Signals start of a new tick.                                                                                              |
-| `engine.coord.tick.done`            | Systems → Coordinator   | `TickAck { tick_id, instance_id }`              | System instance acknowledges tick completion.                                                                             |
-| `engine.entity.create`              | Coordinator → \*        | `EntityCreated { entity, archetype }`           | Broadcasts entity creation.                                                                                               |
-| `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                            |
-| `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard { entities[], data[] }`         | Sends a batch of component data to the system instance(s). Uses a queue group so shards are distributed across instances. |
-| `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard { entities[], data[] }`         | System publishes mutated component data back.                                                                             |
-| `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                |
-| `engine.system.unregister`          | System → Coordinator    | `SystemUnregister { name, instance_id }`        | System unregisters an instance on shutdown. Queued and applied before the next tick.                                      |
-| `engine.system.schedule.<system>`   | Coordinator → System(s) | `SystemSchedule { tick_id, shard_range }`       | Tells system instance(s) to execute on the given shard. Delivered via queue group.                                        |
-| `engine.system.heartbeat`           | Systems → Coordinator   | `Heartbeat { instance_id, system, load }`       | Periodic health & load report.                                                                                            |
-| `engine.query.request`              | Any → Coordinator       | `QueryRequest { query }`                        | Ad-hoc query (e.g. from editor).                                                                                          |
-| `engine.query.response`             | Coordinator → Requester | `QueryResponse { entities[], data[] }`          | Response to an ad-hoc query.                                                                                              |
+| Subject                             | Direction               | Payload                                         | Purpose                                                                                                                                                           |
+| ----------------------------------- | ----------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.coord.tick`                 | Coordinator → Systems   | `TickStart { tick_id, dt }`                     | Signals start of a new tick.                                                                                                                                      |
+| `engine.coord.tick.done`            | Systems → Coordinator   | `TickAck { tick_id, instance_id }`              | System instance acknowledges tick completion.                                                                                                                     |
+| `engine.entity.create`              | Coordinator → \*        | `EntityCreated { entity, archetype }`           | Broadcasts entity creation.                                                                                                                                       |
+| `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                                                                    |
+| `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard { entities[], data[] }`         | Sends a batch of component data to the system instance(s). Uses a queue group so shards are distributed across instances.                                         |
+| `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard` or `ChangesDone` sentinel      | System publishes mutated component data back, followed by a `ChangesDone` sentinel (tagged via `msg-type` header) so the coordinator knows when to stop draining. |
+| `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                                                        |
+| `engine.system.unregister`          | System → Coordinator    | `SystemUnregister { name, instance_id }`        | System unregisters an instance on shutdown. Queued and applied before the next tick.                                                                              |
+| `engine.system.schedule.<system>`   | Coordinator → System(s) | `SystemSchedule { tick_id, shard_range }`       | Tells system instance(s) to execute on the given shard. Delivered via queue group.                                                                                |
+| `engine.system.heartbeat`           | Systems → Coordinator   | `Heartbeat { instance_id, system, load }`       | Periodic health & load report.                                                                                                                                    |
+| `engine.query.request`              | Any → Coordinator       | `QueryRequest { query }`                        | Ad-hoc query (e.g. from editor).                                                                                                                                  |
+| `engine.query.response`             | Coordinator → Requester | `QueryResponse { entities[], data[] }`          | Response to an ad-hoc query.                                                                                                                                      |
 
 > JetStream is used for `engine.component.*` subjects so that late-joining
 > system instances can replay the latest state.
@@ -219,13 +219,18 @@ Physics and AI run in parallel. Movement runs after both complete.
    Systems within a stage have no conflicts and run in parallel. Stages
    execute sequentially.
 4. **Per-stage execution** — For each stage:
-   a. The coordinator publishes `component.set.<system>` messages so each
+   a. The coordinator subscribes to `component.changed.<system>` for each
+   system in the stage.
+   b. The coordinator publishes `component.set.<system>` messages so each
    system instance has the data it needs.
-   b. The coordinator publishes `system.schedule.<system>` messages.
-   c. Systems execute and publish `component.changed.<system>`.
-   d. Systems ack via `coord.tick.done`.
-   e. The coordinator **waits** for all acks in the stage, then **merges**
-   changed components into the canonical store before proceeding.
+   c. The coordinator publishes `system.schedule.<system>` messages.
+   d. Systems execute and publish `component.changed.<system>` shards,
+   followed by a `ChangesDone` sentinel on the same subject.
+   e. The coordinator drains changed data until it receives a `ChangesDone`
+   sentinel from every instance, then **merges** changed components into
+   the canonical store.
+   f. Systems ack via `coord.tick.done`; the coordinator waits for all acks
+   before proceeding to the next stage.
 5. **Broadcast events** — After all stages complete, the coordinator
    broadcasts any deferred events.
 6. **Advance tick** — The coordinator increments the tick counter and loops.
@@ -287,7 +292,9 @@ process. Systems are stateless — they receive data, compute, and return result
    d. Execute the system function.
    e. Serialise and publish changed component data via
    `engine.component.changed.<system>`.
-   f. Ack the tick via `engine.coord.tick.done`.
+   f. Publish a `ChangesDone` sentinel on the same subject so the
+   coordinator knows all changed data has been sent.
+   g. Ack the tick via `engine.coord.tick.done`.
 4. On graceful shutdown, publish a `system.unregister` message so the
    coordinator removes the instance before the next tick.
 

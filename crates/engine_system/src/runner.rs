@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use engine_net::NatsConnection;
 use engine_net::messages::{
-    ComponentShard, SystemDescriptor, SystemSchedule, SystemUnregister, TickAck,
+    ChangesDone, ComponentShard, SystemDescriptor, SystemSchedule, SystemUnregister, TickAck,
 };
 
 use crate::config::SystemConfig;
@@ -157,6 +157,20 @@ impl SystemRunner {
             for shard in &ctx.output_shards {
                 conn.publish(&changed_subject, shard).await?;
             }
+
+            // Publish end-of-changes sentinel so the coordinator knows all
+            // changed data for this tick has been sent and can stop waiting.
+            let changes_done = ChangesDone {
+                tick_id: schedule.tick_id,
+                instance_id: self.instance_id.clone(),
+            };
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert(
+                engine_net::messages::headers::MSG_TYPE,
+                engine_net::messages::CHANGES_DONE_MSG_TYPE,
+            );
+            conn.publish_with_headers(&changed_subject, headers, &changes_done)
+                .await?;
 
             // Ack tick completion.
             let ack = TickAck {

@@ -23,7 +23,7 @@ use futures::StreamExt;
 use tracing::{debug, info, warn};
 
 use engine_net::NatsConnection;
-use engine_net::messages::{ComponentShard, SystemSchedule, SystemUnregister, TickAck};
+use engine_net::messages::{self, ComponentShard, SystemSchedule, SystemUnregister, TickAck};
 
 use crate::registry::SystemRegistry;
 use crate::scheduler::{self, RegisteredSystem, Stage};
@@ -269,10 +269,11 @@ impl TickLoop {
     /// Run one NATS-connected tick.
     ///
     /// For each stage:
-    ///   1. Publish `component.set.<system>` shards to every system in the stage.
-    ///   2. Publish `system.schedule.<system>` to trigger execution.
-    ///   3. Wait for `coord.tick.done` acks from all instances.
-    ///   4. Collect `component.changed.<system>` shards and merge into the world.
+    ///   1. Subscribe to `component.changed.<system>` for each system.
+    ///   2. Publish `component.set.<system>` shards and `system.schedule.<system>`.
+    ///   3. Drain `component.changed.<system>` until `ChangesDone` sentinels
+    ///      arrive from every instance, merging shards into the world.
+    ///   4. Wait for `coord.tick.done` acks from all instances.
     async fn tick_async(
         &mut self,
         conn: &NatsConnection,
@@ -324,8 +325,16 @@ impl TickLoop {
             // Count total acks expected for this stage.
             let total_acks: usize = stage_systems.iter().map(|(_, count)| *count).sum();
 
-            // 1. Publish component data shards to each system.
-            // 2. Publish schedule messages.
+            // 1. Subscribe to component.changed.<system> for each system
+            //    BEFORE publishing schedules, so we don't miss any messages.
+            let mut changed_subs: Vec<(String, usize, async_nats::Subscriber)> = Vec::new();
+            for (system_name, instance_count) in &stage_systems {
+                let changed_subject = engine_net::subjects::component_changed(system_name);
+                let sub = conn.subscribe(&changed_subject).await?;
+                changed_subs.push((system_name.clone(), *instance_count, sub));
+            }
+
+            // 2. Publish component data shards and schedule messages.
             for (system_name, _) in &stage_systems {
                 // Publish component.set.<system> — for now send all matching
                 // archetype data as ComponentShards. Systems receive the full
@@ -364,10 +373,77 @@ impl TickLoop {
                 conn.publish(&subject, &schedule).await?;
             }
 
-            // 3. Wait for acks from all system instances in this stage.
+            // 3. Collect changed component data from systems.
+            //
+            //    Each system instance publishes its changed component shards
+            //    on `component.changed.<system>`, followed by a ChangesDone
+            //    sentinel (same subject, msg-type header = "changes_done").
+            //    We drain until we receive a sentinel from every instance,
+            //    or hit a timeout.
+            let deadline = Instant::now() + Duration::from_secs(5);
+
+            for (system_name, instance_count, mut changed_sub) in changed_subs {
+                let mut sentinels_received = 0usize;
+
+                while sentinels_received < instance_count {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        warn!(
+                            tick_id = self.tick_id,
+                            stage = stage_idx,
+                            system = system_name,
+                            expected = instance_count,
+                            received = sentinels_received,
+                            "changes-done timeout — proceeding with partial data"
+                        );
+                        break;
+                    }
+
+                    match tokio::time::timeout(remaining, changed_sub.next()).await {
+                        Ok(Some(msg)) => {
+                            // Check if this is a ChangesDone sentinel.
+                            let is_sentinel = msg
+                                .headers
+                                .as_ref()
+                                .and_then(|h| h.get(messages::headers::MSG_TYPE))
+                                .is_some_and(|v| v.as_str() == messages::CHANGES_DONE_MSG_TYPE);
+
+                            if is_sentinel {
+                                sentinels_received += 1;
+                                debug!(
+                                    tick_id = self.tick_id,
+                                    system = system_name,
+                                    sentinels = sentinels_received,
+                                    total = instance_count,
+                                    "changes-done received"
+                                );
+                            } else if let Ok(shard) =
+                                engine_net::decode::<ComponentShard>(msg.payload.as_ref())
+                            {
+                                self.merge_shard(&shard);
+                            }
+                        }
+                        Ok(None) => break, // subscriber closed
+                        Err(_) => {
+                            warn!(
+                                tick_id = self.tick_id,
+                                stage = stage_idx,
+                                system = system_name,
+                                expected = instance_count,
+                                received = sentinels_received,
+                                "changes-done timeout — proceeding with partial data"
+                            );
+                            break;
+                        }
+                    }
+                }
+                // Unsubscribe by dropping.
+                drop(changed_sub);
+            }
+
+            // 4. Wait for acks from all system instances in this stage.
             if total_acks > 0 {
                 let mut acks_received = 0usize;
-                let deadline = Instant::now() + Duration::from_secs(5);
 
                 while acks_received < total_acks {
                     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -410,24 +486,6 @@ impl TickLoop {
                         }
                     }
                 }
-            }
-
-            // 4. Collect changed component data from systems.
-            //    Subscribe transiently and drain any pending messages.
-            for (system_name, _) in &stage_systems {
-                let changed_subject = engine_net::subjects::component_changed(system_name);
-                let mut changed_sub = conn.subscribe(&changed_subject).await?;
-
-                // Give a very brief window to drain buffered messages.
-                while let Ok(Some(msg)) =
-                    tokio::time::timeout(Duration::from_millis(50), changed_sub.next()).await
-                {
-                    if let Ok(shard) = engine_net::decode::<ComponentShard>(msg.payload.as_ref()) {
-                        self.merge_shard(&shard);
-                    }
-                }
-                // Unsubscribe by dropping.
-                drop(changed_sub);
             }
 
             debug!(tick_id = self.tick_id, stage = stage_idx, "stage complete");

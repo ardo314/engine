@@ -63,6 +63,19 @@ pub struct ComponentShard {
     pub data: Vec<Vec<u8>>,
 }
 
+/// Sentinel published by a system instance on `component.changed.<system>`
+/// after it has finished sending all changed component shards for a tick.
+///
+/// The coordinator uses this to stop draining changed data immediately
+/// instead of waiting for a timeout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangesDone {
+    /// The tick that was completed.
+    pub tick_id: u64,
+    /// The instance that finished sending changes.
+    pub instance_id: String,
+}
+
 // ── System management ───────────────────────────────────────────────────────
 
 /// A system registers itself with the coordinator on startup.
@@ -140,6 +153,9 @@ pub mod headers {
     pub const INSTANCE_ID: &str = "instance-id";
 }
 
+/// Header value for a [`ChangesDone`] sentinel on `component.changed.<system>`.
+pub const CHANGES_DONE_MSG_TYPE: &str = "changes_done";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +186,17 @@ mod tests {
         assert_eq!(restored.name, "physics");
         assert_eq!(restored.query.reads.len(), 1);
         assert_eq!(restored.query.writes.len(), 1);
+    }
+
+    #[test]
+    fn test_changes_done_roundtrip() {
+        let msg = ChangesDone {
+            tick_id: 99,
+            instance_id: "inst-42".to_string(),
+        };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let restored: ChangesDone = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(restored.tick_id, 99);
+        assert_eq!(restored.instance_id, "inst-42");
     }
 }
