@@ -76,6 +76,17 @@ pub struct ChangesDone {
     pub instance_id: String,
 }
 
+/// Sentinel published by the coordinator on `component.set.<system>` after
+/// it has finished sending all component data shards for a tick.
+///
+/// Systems use this to stop draining input data immediately instead of
+/// waiting for a timeout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataDone {
+    /// The tick this sentinel belongs to.
+    pub tick_id: u64,
+}
+
 // ── System management ───────────────────────────────────────────────────────
 
 /// A system registers itself with the coordinator on startup.
@@ -156,6 +167,9 @@ pub mod headers {
 /// Header value for a [`ChangesDone`] sentinel on `component.changed.<system>`.
 pub const CHANGES_DONE_MSG_TYPE: &str = "changes_done";
 
+/// Header value for a [`DataDone`] sentinel on `component.set.<system>`.
+pub const DATA_DONE_MSG_TYPE: &str = "data_done";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +212,13 @@ mod tests {
         let restored: ChangesDone = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.tick_id, 99);
         assert_eq!(restored.instance_id, "inst-42");
+    }
+
+    #[test]
+    fn test_data_done_roundtrip() {
+        let msg = DataDone { tick_id: 77 };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let restored: DataDone = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(restored.tick_id, 77);
     }
 }

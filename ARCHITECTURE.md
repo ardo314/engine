@@ -121,7 +121,7 @@ cluster.
 | `engine.coord.tick.done`            | Systems → Coordinator   | `TickAck { tick_id, instance_id }`              | System instance acknowledges tick completion.                                                                                                                     |
 | `engine.entity.create`              | Coordinator → \*        | `EntityCreated { entity, archetype }`           | Broadcasts entity creation.                                                                                                                                       |
 | `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                                                                    |
-| `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard { entities[], data[] }`         | Sends a batch of component data to the system instance(s). Uses a queue group so shards are distributed across instances.                                         |
+| `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard` or `DataDone` sentinel         | Sends batches of component data followed by a `DataDone` sentinel (tagged via `msg-type` header) so the system knows all data has been sent.                      |
 | `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard` or `ChangesDone` sentinel      | System publishes mutated component data back, followed by a `ChangesDone` sentinel (tagged via `msg-type` header) so the coordinator knows when to stop draining. |
 | `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                                                        |
 | `engine.system.unregister`          | System → Coordinator    | `SystemUnregister { name, instance_id }`        | System unregisters an instance on shutdown. Queued and applied before the next tick.                                                                              |
@@ -221,11 +221,12 @@ Physics and AI run in parallel. Movement runs after both complete.
 4. **Per-stage execution** — For each stage:
    a. The coordinator subscribes to `component.changed.<system>` for each
    system in the stage.
-   b. The coordinator publishes `component.set.<system>` messages so each
-   system instance has the data it needs.
+   b. The coordinator publishes `component.set.<system>` data shards followed
+   by a `DataDone` sentinel so each system instance knows all data has arrived.
    c. The coordinator publishes `system.schedule.<system>` messages.
-   d. Systems execute and publish `component.changed.<system>` shards,
-   followed by a `ChangesDone` sentinel on the same subject.
+   d. Systems drain data shards until the `DataDone` sentinel, then execute
+   and publish `component.changed.<system>` shards, followed by a
+   `ChangesDone` sentinel on the same subject.
    e. The coordinator drains changed data until it receives a `ChangesDone`
    sentinel from every instance, then **merges** changed components into
    the canonical store.
@@ -287,7 +288,8 @@ process. Systems are stateless — they receive data, compute, and return result
    load-balances shard messages across all instances of this system.
 3. On each tick:
    a. Receive a `SystemSchedule` message with the shard range.
-   b. Receive component data via `engine.component.set.<system>`.
+   b. Receive component data via `engine.component.set.<system>`, draining
+   until a `DataDone` sentinel arrives (tagged via `msg-type` header).
    c. Deserialise into local archetype tables.
    d. Execute the system function.
    e. Serialise and publish changed component data via

@@ -23,7 +23,9 @@ use futures::StreamExt;
 use tracing::{debug, info, warn};
 
 use engine_net::NatsConnection;
-use engine_net::messages::{self, ComponentShard, SystemSchedule, SystemUnregister, TickAck};
+use engine_net::messages::{
+    self, ComponentShard, DataDone, SystemSchedule, SystemUnregister, TickAck,
+};
 
 use crate::registry::SystemRegistry;
 use crate::scheduler::{self, RegisteredSystem, Stage};
@@ -270,7 +272,8 @@ impl TickLoop {
     ///
     /// For each stage:
     ///   1. Subscribe to `component.changed.<system>` for each system.
-    ///   2. Publish `component.set.<system>` shards and `system.schedule.<system>`.
+    ///   2. Publish `component.set.<system>` shards, a `DataDone` sentinel,
+    ///      and `system.schedule.<system>`.
     ///   3. Drain `component.changed.<system>` until `ChangesDone` sentinels
     ///      arrive from every instance, merging shards into the world.
     ///   4. Wait for `coord.tick.done` acks from all instances.
@@ -334,11 +337,13 @@ impl TickLoop {
                 changed_subs.push((system_name.clone(), *instance_count, sub));
             }
 
-            // 2. Publish component data shards and schedule messages.
+            // 2. Publish component data shards, data-done sentinel, and schedule.
             for (system_name, _) in &stage_systems {
                 // Publish component.set.<system> — for now send all matching
                 // archetype data as ComponentShards. Systems receive the full
                 // data set for the component types they declared.
+                let set_subject = engine_net::subjects::component_set(system_name);
+
                 let sys_info = self.registry.get(system_name);
                 if let Some(info) = sys_info {
                     let required = info.query.required_types();
@@ -357,12 +362,21 @@ impl TickLoop {
                                         })
                                         .collect(),
                                 };
-                                let subject = engine_net::subjects::component_set(system_name);
-                                conn.publish(&subject, &shard).await?;
+                                conn.publish(&set_subject, &shard).await?;
                             }
                         }
                     }
                 }
+
+                // Publish a DataDone sentinel so the system knows all data
+                // shards have been sent and can stop waiting immediately.
+                let data_done = DataDone {
+                    tick_id: self.tick_id,
+                };
+                let mut headers = async_nats::HeaderMap::new();
+                headers.insert(messages::headers::MSG_TYPE, messages::DATA_DONE_MSG_TYPE);
+                conn.publish_with_headers(&set_subject, headers, &data_done)
+                    .await?;
 
                 // Publish the schedule message to trigger execution.
                 let schedule = SystemSchedule {

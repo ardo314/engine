@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use engine_net::NatsConnection;
 use engine_net::messages::{
-    ChangesDone, ComponentShard, SystemDescriptor, SystemSchedule, SystemUnregister, TickAck,
+    self, ChangesDone, ComponentShard, SystemDescriptor, SystemSchedule, SystemUnregister, TickAck,
 };
 
 use crate::config::SystemConfig;
@@ -67,7 +67,8 @@ impl SystemRunner {
     /// 1. Connect to NATS.
     /// 2. Publish a `system.register` message.
     /// 3. Subscribe to the schedule and data subjects.
-    /// 4. Loop: receive data shards → receive schedule → execute → publish changes → ack.
+    /// 4. Loop: receive data shards (until `DataDone` sentinel) → receive
+    ///    schedule → execute → publish changes → publish `ChangesDone` → ack.
     ///
     /// The `system_fn` is called once per tick with a [`SystemContext`]
     /// containing the received component data.
@@ -126,15 +127,40 @@ impl SystemRunner {
                 "schedule received"
             );
 
-            // Collect component data shards that arrived before the schedule.
-            // The coordinator sends all shards *before* the schedule message,
-            // so they should be buffered in the subscription by now.
+            // Collect component data shards that arrived before/with the schedule.
+            // The coordinator sends all shards followed by a DataDone sentinel
+            // on `component.set.<system>`, so we drain until we see it.
             let mut input_shards = Vec::new();
-            while let Ok(Some(msg)) =
-                tokio::time::timeout(Duration::from_millis(10), data_sub.next()).await
-            {
-                if let Ok(shard) = engine_net::decode::<ComponentShard>(msg.payload.as_ref()) {
-                    input_shards.push(shard);
+            let data_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(data_deadline, data_sub.next()).await {
+                    Ok(Some(msg)) => {
+                        // Check if this is the DataDone sentinel.
+                        let is_done = msg
+                            .headers
+                            .as_ref()
+                            .and_then(|h| h.get(messages::headers::MSG_TYPE))
+                            .is_some_and(|v| v.as_str() == messages::DATA_DONE_MSG_TYPE);
+
+                        if is_done {
+                            break;
+                        }
+
+                        if let Ok(shard) =
+                            engine_net::decode::<ComponentShard>(msg.payload.as_ref())
+                        {
+                            input_shards.push(shard);
+                        }
+                    }
+                    Ok(None) => break, // subscriber closed
+                    Err(_) => {
+                        debug!(
+                            system = self.config.name,
+                            tick_id = schedule.tick_id,
+                            "data-done timeout — proceeding with collected shards"
+                        );
+                        break;
+                    }
                 }
             }
 
