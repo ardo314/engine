@@ -27,6 +27,9 @@ pub const ENTITY_DESTROY: &str = "engine.entity.destroy";
 /// System registers itself. System → Coordinator.
 pub const SYSTEM_REGISTER: &str = "engine.system.register";
 
+/// System unregisters itself. System → Coordinator.
+pub const SYSTEM_UNREGISTER: &str = "engine.system.unregister";
+
 /// Periodic heartbeat. Systems → Coordinator.
 pub const SYSTEM_HEARTBEAT: &str = "engine.system.heartbeat";
 

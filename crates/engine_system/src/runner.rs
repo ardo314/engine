@@ -11,7 +11,9 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use engine_net::NatsConnection;
-use engine_net::messages::{ComponentShard, SystemDescriptor, SystemSchedule, TickAck};
+use engine_net::messages::{
+    ComponentShard, SystemDescriptor, SystemSchedule, SystemUnregister, TickAck,
+};
 
 use crate::config::SystemConfig;
 use crate::context::SystemContext;
@@ -170,6 +172,19 @@ impl SystemRunner {
                 "tick acked"
             );
         }
+
+        // Graceful shutdown: unregister this instance from the coordinator.
+        let unreg = SystemUnregister {
+            name: self.config.name.clone(),
+            instance_id: self.instance_id.clone(),
+        };
+        conn.publish(engine_net::subjects::SYSTEM_UNREGISTER, &unreg)
+            .await?;
+        info!(
+            system = self.config.name,
+            instance_id = self.instance_id,
+            "unregistered from coordinator"
+        );
 
         Ok(())
     }

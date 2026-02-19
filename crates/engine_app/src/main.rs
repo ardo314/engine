@@ -7,8 +7,9 @@
 //! ## Startup Sequence
 //!
 //! 1. Connect to NATS (configurable URL, default `nats://localhost:4222`).
-//! 2. Subscribe to `engine.system.register`.
-//! 3. Enter the fixed-timestep tick loop.
+//! 2. Subscribe to `engine.system.register` and `engine.system.unregister`.
+//! 3. Enter the fixed-timestep tick loop. Systems may register/unregister at
+//!    any time; changes are queued and applied before the next tick.
 
 mod registry;
 mod scheduler;

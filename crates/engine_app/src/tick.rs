@@ -2,12 +2,17 @@
 //!
 //! Implements the fixed-timestep tick lifecycle described in `ARCHITECTURE.md`:
 //!
-//! 1. Process entity creation/destruction commands.
-//! 2. Build the dependency graph from registered system queries.
-//! 3. Compute execution stages.
-//! 4. For each stage: send data, schedule systems, wait for acks, merge results.
-//! 5. Broadcast deferred events.
-//! 6. Advance the tick counter.
+//! 1. Apply pending system register/unregister changes.
+//! 2. Process entity creation/destruction commands.
+//! 3. Build the dependency graph from registered system queries.
+//! 4. Compute execution stages.
+//! 5. For each stage: send data, schedule systems, wait for acks, merge results.
+//! 6. Broadcast deferred events.
+//! 7. Advance the tick counter.
+//!
+//! Systems may register or unregister at any time via NATS. Incoming requests
+//! are queued and applied atomically before the next tick starts, ensuring the
+//! system set never changes mid-tick.
 
 #![allow(dead_code)]
 
@@ -18,11 +23,20 @@ use futures::StreamExt;
 use tracing::{debug, info, warn};
 
 use engine_net::NatsConnection;
-use engine_net::messages::{ComponentShard, SystemSchedule, TickAck};
+use engine_net::messages::{ComponentShard, SystemSchedule, SystemUnregister, TickAck};
 
 use crate::registry::SystemRegistry;
 use crate::scheduler::{self, RegisteredSystem, Stage};
 use crate::world::World;
+
+/// A pending system change to apply before the next tick.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingSystemChange {
+    /// A system instance wants to register.
+    Register(engine_net::messages::SystemDescriptor),
+    /// A system instance wants to unregister.
+    Unregister { name: String, instance_id: String },
+}
 
 /// Configuration for the coordinator tick loop.
 #[derive(Debug, Clone)]
@@ -58,6 +72,8 @@ pub struct TickLoop {
     systems: Vec<RegisteredSystem>,
     /// Whether the stage cache is dirty and needs recomputation.
     stages_dirty: bool,
+    /// Queue of pending register/unregister changes applied before each tick.
+    pending_changes: Vec<PendingSystemChange>,
 }
 
 impl TickLoop {
@@ -72,6 +88,7 @@ impl TickLoop {
             stages: Vec::new(),
             systems: Vec::new(),
             stages_dirty: true,
+            pending_changes: Vec::new(),
         }
     }
 
@@ -126,6 +143,52 @@ impl TickLoop {
         );
     }
 
+    /// Enqueue a pending system change to be applied before the next tick.
+    pub fn enqueue_change(&mut self, change: PendingSystemChange) {
+        self.pending_changes.push(change);
+    }
+
+    /// Apply all pending register/unregister changes to the registry.
+    ///
+    /// This is called once at the start of each tick, ensuring that systems
+    /// are only added or removed between ticks — never mid-tick.
+    fn apply_pending_changes(&mut self) {
+        if self.pending_changes.is_empty() {
+            return;
+        }
+
+        let changes: Vec<PendingSystemChange> = self.pending_changes.drain(..).collect();
+        for change in changes {
+            match change {
+                PendingSystemChange::Register(descriptor) => {
+                    info!(
+                        system = descriptor.name,
+                        instance = descriptor.instance_id,
+                        "applying queued registration"
+                    );
+                    self.registry.register(descriptor);
+                    self.stages_dirty = true;
+                }
+                PendingSystemChange::Unregister { name, instance_id } => {
+                    info!(
+                        system = name,
+                        instance = instance_id,
+                        "applying queued unregistration"
+                    );
+                    if self.registry.unregister_instance(&name, &instance_id) {
+                        self.stages_dirty = true;
+                    } else {
+                        warn!(
+                            system = name,
+                            instance = instance_id,
+                            "unregister requested but instance not found"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns the current execution stages, recomputing if necessary.
     #[must_use]
     pub fn stages(&mut self) -> &[Stage] {
@@ -141,6 +204,9 @@ impl TickLoop {
     /// version advances state locally and is useful for testing.
     pub fn tick(&mut self) {
         self.tick_id += 1;
+
+        // Apply any queued register/unregister changes before running.
+        self.apply_pending_changes();
 
         if self.stages_dirty {
             self.recompute_stages();
@@ -213,6 +279,9 @@ impl TickLoop {
         ack_sub: &mut async_nats::Subscriber,
     ) -> Result<()> {
         self.tick_id += 1;
+
+        // Apply any queued register/unregister changes before running.
+        self.apply_pending_changes();
 
         if self.stages_dirty {
             self.recompute_stages();
@@ -390,8 +459,12 @@ impl TickLoop {
     /// Run the async NATS-connected tick loop.
     ///
     /// This is the primary entry point for the coordinator. It connects to
-    /// NATS, listens for system registrations, and runs the fixed-timestep
-    /// tick loop publishing/receiving data over NATS.
+    /// NATS, listens for system registrations and unregistrations, and runs
+    /// the fixed-timestep tick loop publishing/receiving data over NATS.
+    ///
+    /// Systems may register or unregister at any time. Incoming requests are
+    /// queued and applied atomically before the next tick starts, ensuring
+    /// the system set never changes mid-tick.
     ///
     /// # Errors
     ///
@@ -409,41 +482,15 @@ impl TickLoop {
             .subscribe(engine_net::subjects::SYSTEM_REGISTER)
             .await?;
 
+        // Subscribe to system unregistrations.
+        let mut unregister_sub = conn
+            .subscribe(engine_net::subjects::SYSTEM_UNREGISTER)
+            .await?;
+
         info!(
             tick_rate = self.config.tick_rate,
             max_ticks = self.config.max_ticks,
             "starting tick loop (NATS)"
-        );
-
-        // Wait briefly for initial system registrations before starting ticks.
-        info!("waiting for system registrations (2s)...");
-        let registration_deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let remaining = registration_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(remaining, register_sub.next()).await {
-                Ok(Some(msg)) => {
-                    if let Ok(desc) = engine_net::decode::<engine_net::messages::SystemDescriptor>(
-                        msg.payload.as_ref(),
-                    ) {
-                        info!(
-                            system = desc.name,
-                            instance = desc.instance_id,
-                            "system registered"
-                        );
-                        self.registry_mut().register(desc);
-                    }
-                }
-                _ => break,
-            }
-        }
-
-        info!(
-            systems = self.registry.system_count(),
-            instances = self.registry.total_instances(),
-            "registration phase complete — starting ticks"
         );
 
         let mut tick_count = 0u64;
@@ -451,7 +498,7 @@ impl TickLoop {
         loop {
             let start = Instant::now();
 
-            // Drain any new registrations that arrived between ticks.
+            // Drain any pending registrations that arrived since the last tick.
             while let Ok(Some(msg)) =
                 tokio::time::timeout(Duration::ZERO, register_sub.next()).await
             {
@@ -461,13 +508,30 @@ impl TickLoop {
                     info!(
                         system = desc.name,
                         instance = desc.instance_id,
-                        "system registered (mid-loop)"
+                        "queued system registration"
                     );
-                    self.registry_mut().register(desc);
+                    self.enqueue_change(PendingSystemChange::Register(desc));
                 }
             }
 
-            // Run the tick.
+            // Drain any pending unregistrations that arrived since the last tick.
+            while let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::ZERO, unregister_sub.next()).await
+            {
+                if let Ok(unreg) = engine_net::decode::<SystemUnregister>(msg.payload.as_ref()) {
+                    info!(
+                        system = unreg.name,
+                        instance = unreg.instance_id,
+                        "queued system unregistration"
+                    );
+                    self.enqueue_change(PendingSystemChange::Unregister {
+                        name: unreg.name,
+                        instance_id: unreg.instance_id,
+                    });
+                }
+            }
+
+            // Run the tick (applies pending changes internally).
             self.tick_async(conn, &mut ack_sub).await?;
 
             tick_count += 1;
@@ -577,5 +641,103 @@ mod tests {
         let row = table.entity_row(entity).unwrap();
         let data = table.columns[0].get_raw(row).unwrap();
         assert_eq!(data, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_pending_register_applied_on_tick() {
+        let mut tick_loop = TickLoop::new(TickConfig::default());
+
+        // Enqueue a registration.
+        tick_loop.enqueue_change(PendingSystemChange::Register(SystemDescriptor {
+            name: "physics".to_string(),
+            query: QueryDescriptor::new()
+                .read(ComponentTypeId(1))
+                .write(ComponentTypeId(2)),
+            instance_id: "inst-1".to_string(),
+        }));
+
+        // Before the tick, registry should still be empty.
+        assert_eq!(tick_loop.registry().system_count(), 0);
+
+        // After the tick, the system should be registered.
+        tick_loop.tick();
+        assert_eq!(tick_loop.registry().system_count(), 1);
+        assert_eq!(tick_loop.registry().total_instances(), 1);
+    }
+
+    #[test]
+    fn test_pending_unregister_applied_on_tick() {
+        let mut tick_loop = TickLoop::new(TickConfig::default());
+
+        // Directly register a system first.
+        tick_loop.registry_mut().register(SystemDescriptor {
+            name: "physics".to_string(),
+            query: QueryDescriptor::new()
+                .read(ComponentTypeId(1))
+                .write(ComponentTypeId(2)),
+            instance_id: "inst-1".to_string(),
+        });
+        assert_eq!(tick_loop.registry().system_count(), 1);
+
+        // Enqueue an unregistration.
+        tick_loop.enqueue_change(PendingSystemChange::Unregister {
+            name: "physics".to_string(),
+            instance_id: "inst-1".to_string(),
+        });
+
+        // Before the tick, system should still be registered.
+        assert_eq!(tick_loop.registry().system_count(), 1);
+
+        // After the tick, the system should be gone.
+        tick_loop.tick();
+        assert_eq!(tick_loop.registry().system_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_changes_applied_in_order() {
+        let mut tick_loop = TickLoop::new(TickConfig::default());
+
+        // Enqueue register then unregister for the same system.
+        tick_loop.enqueue_change(PendingSystemChange::Register(SystemDescriptor {
+            name: "physics".to_string(),
+            query: QueryDescriptor::new()
+                .read(ComponentTypeId(1))
+                .write(ComponentTypeId(2)),
+            instance_id: "inst-1".to_string(),
+        }));
+        tick_loop.enqueue_change(PendingSystemChange::Unregister {
+            name: "physics".to_string(),
+            instance_id: "inst-1".to_string(),
+        });
+
+        // After tick, register then unregister leaves the registry empty.
+        tick_loop.tick();
+        assert_eq!(tick_loop.registry().system_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_changes_trigger_stage_recomputation() {
+        let config = TickConfig {
+            tick_rate: 1000.0,
+            max_ticks: 0,
+        };
+        let mut tick_loop = TickLoop::new(config);
+
+        // Run a tick with no systems.
+        tick_loop.tick();
+        assert!(tick_loop.stages.is_empty());
+
+        // Enqueue a system registration.
+        tick_loop.enqueue_change(PendingSystemChange::Register(SystemDescriptor {
+            name: "physics".to_string(),
+            query: QueryDescriptor::new()
+                .read(ComponentTypeId(1))
+                .write(ComponentTypeId(2)),
+            instance_id: "inst-1".to_string(),
+        }));
+
+        // After tick, stages should have been recomputed.
+        tick_loop.tick();
+        assert_eq!(tick_loop.stages.len(), 1);
     }
 }

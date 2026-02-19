@@ -123,7 +123,8 @@ cluster.
 | `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                            |
 | `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard { entities[], data[] }`         | Sends a batch of component data to the system instance(s). Uses a queue group so shards are distributed across instances. |
 | `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard { entities[], data[] }`         | System publishes mutated component data back.                                                                             |
-| `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup.                                                                         |
+| `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                |
+| `engine.system.unregister`          | System → Coordinator    | `SystemUnregister { name, instance_id }`        | System unregisters an instance on shutdown. Queued and applied before the next tick.                                      |
 | `engine.system.schedule.<system>`   | Coordinator → System(s) | `SystemSchedule { tick_id, shard_range }`       | Tells system instance(s) to execute on the given shard. Delivered via queue group.                                        |
 | `engine.system.heartbeat`           | Systems → Coordinator   | `Heartbeat { instance_id, system, load }`       | Periodic health & load report.                                                                                            |
 | `engine.query.request`              | Any → Coordinator       | `QueryRequest { query }`                        | Ad-hoc query (e.g. from editor).                                                                                          |
@@ -139,6 +140,8 @@ cluster.
 ```
 Coordinator                         Systems (one process each)
     │                                  │
+    │── 0. Apply pending system        │
+    │      register/unregister changes │
     │── 1. Allocate / destroy entities │
     │── 2. Build dependency graph      │
     │── 3. Compute execution stages    │
@@ -202,6 +205,11 @@ Physics and AI run in parallel. Movement runs after both complete.
 
 ### Step-by-step
 
+0. **Apply pending system changes** — The coordinator drains the pending
+   register/unregister queue, updating the system registry. Systems may
+   register or unregister at any time; changes are queued and applied
+   atomically before the next tick starts, ensuring the system set never
+   changes mid-tick.
 1. **Entity management** — The coordinator processes queued entity
    creation/destruction commands, updates the archetype table, and broadcasts
    `entity.create` / `entity.destroy` events.
@@ -234,7 +242,9 @@ responsibilities:
 - **Archetype storage** — Canonical SoA (struct-of-arrays) tables for every
   archetype. Stored in-process and replicated to JetStream for persistence.
 - **System registry** — Maintains a list of all registered systems, their
-  queries, and how many instances are available for each.
+  queries, and how many instances are available for each. Systems may register
+  or unregister at any time via NATS; changes are queued and applied
+  atomically before the next tick starts.
 - **Scheduler** — Builds a conflict graph from system read/write sets each
   tick. Partitions systems into stages: systems within a stage run in
   parallel (no read/write conflicts), stages run sequentially with a merge
@@ -249,8 +259,10 @@ responsibilities:
 
 1. Connect to NATS (configurable URL, default `nats://localhost:4222`).
 2. Create JetStream streams for component persistence.
-3. Subscribe to `engine.system.register`.
-4. Enter tick loop (fixed timestep, configurable Hz).
+3. Subscribe to `engine.system.register` and `engine.system.unregister`.
+4. Enter tick loop (fixed timestep, configurable Hz). Register/unregister
+   requests that arrive between ticks are queued and applied before the
+   next tick begins.
 
 ---
 
@@ -263,7 +275,8 @@ process. Systems are stateless — they receive data, compute, and return result
 ### Lifecycle
 
 1. Connect to NATS and publish a `system.register` message declaring its
-   `instance_id`, system `name`, and `QueryDescriptor`.
+   `instance_id`, system `name`, and `QueryDescriptor`. The coordinator
+   queues the registration and applies it before the next tick.
 2. Subscribe to `engine.system.schedule.<system>` using a **queue group** named
    after the system (e.g. `q.physics`). This means NATS automatically
    load-balances shard messages across all instances of this system.
@@ -275,6 +288,8 @@ process. Systems are stateless — they receive data, compute, and return result
    e. Serialise and publish changed component data via
    `engine.component.changed.<system>`.
    f. Ack the tick via `engine.coord.tick.done`.
+4. On graceful shutdown, publish a `system.unregister` message so the
+   coordinator removes the instance before the next tick.
 
 ### Horizontal Scaling
 

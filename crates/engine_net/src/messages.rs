@@ -77,6 +77,18 @@ pub struct SystemDescriptor {
     pub instance_id: String,
 }
 
+/// A system unregisters a specific instance from the coordinator.
+///
+/// Published on [`subjects::SYSTEM_UNREGISTER`](crate::subjects::SYSTEM_UNREGISTER)
+/// when a system shuts down gracefully.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemUnregister {
+    /// The system name.
+    pub name: String,
+    /// The instance being removed.
+    pub instance_id: String,
+}
+
 /// The coordinator tells system instance(s) to execute on a given shard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemSchedule {
