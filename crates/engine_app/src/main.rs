@@ -19,6 +19,7 @@ use anyhow::Result;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use engine_net::NatsConnection;
 use tick::{TickConfig, TickLoop};
 
 #[tokio::main]
@@ -30,15 +31,17 @@ async fn main() -> Result<()> {
 
     info!("engine coordinator starting");
 
-    // TODO: Connect to NATS and subscribe to system.register.
-    // For now, run a local tick loop for demonstration.
+    // Connect to NATS.
+    let conn = NatsConnection::connect().await?;
+    info!("connected to NATS");
+
     let config = TickConfig {
         tick_rate: 60.0,
-        max_ticks: 1, // Run a single tick for startup verification.
+        max_ticks: 0, // Run indefinitely.
     };
 
     let mut tick_loop = TickLoop::new(config);
-    tick_loop.run();
+    tick_loop.run_async(&conn).await?;
 
     info!("engine coordinator shut down");
     Ok(())

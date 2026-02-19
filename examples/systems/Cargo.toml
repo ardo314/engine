@@ -1,0 +1,22 @@
+[package]
+name = "example_systems"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "accelerate_system"
+path = "src/accelerate.rs"
+
+[[bin]]
+name = "print_velocity_system"
+path = "src/print_velocity.rs"
+
+[dependencies]
+engine_component = { workspace = true }
+engine_math = { workspace = true }
+engine_system = { workspace = true }
+components = { path = "../components" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

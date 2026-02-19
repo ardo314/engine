@@ -3,13 +3,15 @@
 //! The runner handles NATS connection, registration, and the per-tick
 //! receive/execute/publish loop.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use futures::StreamExt;
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use engine_net::NatsConnection;
-use engine_net::messages::SystemDescriptor;
+use engine_net::messages::{ComponentShard, SystemDescriptor, SystemSchedule, TickAck};
 
 use crate::config::SystemConfig;
 use crate::context::SystemContext;
@@ -62,8 +64,8 @@ impl SystemRunner {
     ///
     /// 1. Connect to NATS.
     /// 2. Publish a `system.register` message.
-    /// 3. Subscribe to the schedule subject via queue group.
-    /// 4. Loop: receive schedule → receive data → execute → publish changes → ack.
+    /// 3. Subscribe to the schedule and data subjects.
+    /// 4. Loop: receive data shards → receive schedule → execute → publish changes → ack.
     ///
     /// The `system_fn` is called once per tick with a [`SystemContext`]
     /// containing the received component data.
@@ -101,28 +103,49 @@ impl SystemRunner {
             "registered with coordinator"
         );
 
-        // Subscribe to schedule messages via queue group.
+        // Subscribe to component data (arrives before schedule).
+        let data_subject = engine_net::subjects::component_set(&self.config.name);
+        let mut data_sub = conn.subscribe(&data_subject).await?;
+        info!(subject = data_subject, "subscribed to component data");
+
+        // Subscribe to schedule messages.
         let schedule_subject = engine_net::subjects::system_schedule(&self.config.name);
         let mut schedule_sub = conn.subscribe(&schedule_subject).await?;
         info!(subject = schedule_subject, "subscribed to schedule");
 
-        // Subscribe to component data.
-        let data_subject = engine_net::subjects::component_set(&self.config.name);
-        let mut _data_sub = conn.subscribe(&data_subject).await?;
-        info!(subject = data_subject, "subscribed to component data");
-
         // Main loop: wait for schedule messages.
         while let Some(schedule_msg) = schedule_sub.next().await {
             // Decode the schedule message.
-            let schedule: engine_net::messages::SystemSchedule =
-                engine_net::decode(schedule_msg.payload.as_ref())?;
+            let schedule: SystemSchedule = engine_net::decode(schedule_msg.payload.as_ref())?;
+
+            debug!(
+                system = self.config.name,
+                tick_id = schedule.tick_id,
+                "schedule received"
+            );
+
+            // Collect component data shards that arrived before the schedule.
+            // The coordinator sends all shards *before* the schedule message,
+            // so they should be buffered in the subscription by now.
+            let mut input_shards = Vec::new();
+            while let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::from_millis(10), data_sub.next()).await
+            {
+                if let Ok(shard) = engine_net::decode::<ComponentShard>(msg.payload.as_ref()) {
+                    input_shards.push(shard);
+                }
+            }
+
+            debug!(
+                system = self.config.name,
+                tick_id = schedule.tick_id,
+                shards = input_shards.len(),
+                "data shards collected"
+            );
 
             // Create context for this tick.
-            let mut ctx = SystemContext::new(schedule.tick_id, 0.0);
-
-            // TODO: Receive component data shards for this tick.
-            // In a full implementation, the coordinator sends component data
-            // before the schedule message. We would collect those here.
+            let mut ctx = SystemContext::new(schedule.tick_id);
+            ctx.input_shards = input_shards;
 
             // Execute the system function.
             system_fn(&mut ctx);
@@ -134,12 +157,18 @@ impl SystemRunner {
             }
 
             // Ack tick completion.
-            let ack = engine_net::messages::TickAck {
+            let ack = TickAck {
                 tick_id: schedule.tick_id,
                 instance_id: self.instance_id.clone(),
             };
             conn.publish(engine_net::subjects::COORD_TICK_DONE, &ack)
                 .await?;
+
+            debug!(
+                system = self.config.name,
+                tick_id = schedule.tick_id,
+                "tick acked"
+            );
         }
 
         Ok(())
