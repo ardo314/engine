@@ -3,6 +3,7 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "postStartCommand": "nats-server -js &",
   "customizations": {
     "vscode": {
       "extensions": [
