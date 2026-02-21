@@ -1,0 +1,19 @@
+[package]
+name = "accelerate_system"
+version = "0.1.0"
+edition = "2024"
+description = "Example system that increases velocity each tick."
+
+[[bin]]
+name = "accelerate_system"
+path = "src/main.rs"
+
+[dependencies]
+engine_component = { workspace = true }
+engine_math = { workspace = true }
+engine_system = { workspace = true }
+components = { path = "../components" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

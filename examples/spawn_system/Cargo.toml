@@ -1,0 +1,20 @@
+[package]
+name = "spawn_system"
+version = "0.1.0"
+edition = "2024"
+description = "Example system that spawns an entity with a Velocity component."
+
+[[bin]]
+name = "spawn_system"
+path = "src/main.rs"
+
+[dependencies]
+engine_component = { workspace = true }
+engine_math = { workspace = true }
+engine_net = { workspace = true }
+engine_system = { workspace = true }
+components = { path = "../components" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
