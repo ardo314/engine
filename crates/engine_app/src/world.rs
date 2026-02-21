@@ -69,6 +69,45 @@ impl World {
         entity
     }
 
+    /// Allocate a new entity and write serialised component data into its
+    /// archetype.
+    ///
+    /// `component_types`, `component_data`, and `component_sizes` must be
+    /// parallel slices — one entry per component. The component data is raw
+    /// MessagePack bytes that get written directly into the archetype columns.
+    ///
+    /// Returns the new entity, or `None` if the slices are mismatched.
+    pub fn spawn_with_data(
+        &mut self,
+        component_types: &[ComponentTypeId],
+        component_data: &[Vec<u8>],
+        component_sizes: &[usize],
+    ) -> Option<Entity> {
+        if component_types.len() != component_data.len()
+            || component_types.len() != component_sizes.len()
+        {
+            return None;
+        }
+
+        let type_set: BTreeSet<ComponentTypeId> = component_types.iter().copied().collect();
+        let entity = self.allocator.allocate();
+        let archetype_id = self.get_or_create_archetype(type_set, component_sizes);
+
+        if let Some(table) = self.archetypes.get_mut(&archetype_id) {
+            table.entities.push(entity);
+
+            // Write each component's data into the matching column.
+            for (ty, data) in component_types.iter().zip(component_data.iter()) {
+                if let Some(col_idx) = table.column_index(*ty) {
+                    table.columns[col_idx].push_raw(data);
+                }
+            }
+        }
+
+        self.entity_archetype.insert(entity, archetype_id);
+        Some(entity)
+    }
+
     /// Destroy an entity, removing it from its archetype.
     ///
     /// Returns `true` if the entity existed and was removed.

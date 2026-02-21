@@ -1,7 +1,7 @@
 //! Per-tick execution context provided to system functions.
 
 use engine_component::{Component, Entity};
-use engine_net::messages::ComponentShard;
+use engine_net::messages::{ComponentShard, EntitySpawnRequest};
 
 /// Context provided to a system function on each tick.
 ///
@@ -16,6 +16,8 @@ pub struct SystemContext {
     pub input_shards: Vec<ComponentShard>,
     /// Component shards to publish back (modified data).
     pub output_shards: Vec<ComponentShard>,
+    /// Entity spawn requests to forward to the coordinator.
+    pub spawn_requests: Vec<EntitySpawnRequest>,
 }
 
 impl SystemContext {
@@ -26,6 +28,7 @@ impl SystemContext {
             tick_id,
             input_shards: Vec::new(),
             output_shards: Vec::new(),
+            spawn_requests: Vec::new(),
         }
     }
 

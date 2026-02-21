@@ -3911,6 +3911,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "spawn_system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "components",
+ "engine_component",
+ "engine_math",
+ "engine_net",
+ "engine_system",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

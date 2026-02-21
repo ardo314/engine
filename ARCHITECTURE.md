@@ -121,6 +121,7 @@ cluster.
 | `engine.coord.tick.done`            | Systems → Coordinator   | `TickAck { tick_id, instance_id }`              | System instance acknowledges tick completion.                                                                                                                     |
 | `engine.entity.create`              | Coordinator → \*        | `EntityCreated { entity, archetype }`           | Broadcasts entity creation.                                                                                                                                       |
 | `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                                                                    |
+| `engine.entity.spawn.request`       | Systems → Coordinator   | `EntitySpawnRequest { types, data, sizes }`     | System requests entity creation with component data. Processed between ticks.                                                                                     |
 | `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard` or `DataDone` sentinel         | Sends batches of component data followed by a `DataDone` sentinel (tagged via `msg-type` header) so the system knows all data has been sent.                      |
 | `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard` or `ChangesDone` sentinel      | System publishes mutated component data back, followed by a `ChangesDone` sentinel (tagged via `msg-type` header) so the coordinator knows when to stop draining. |
 | `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                                                        |
@@ -210,9 +211,10 @@ Physics and AI run in parallel. Movement runs after both complete.
    register or unregister at any time; changes are queued and applied
    atomically before the next tick starts, ensuring the system set never
    changes mid-tick.
-1. **Entity management** — The coordinator processes queued entity
-   creation/destruction commands, updates the archetype table, and broadcasts
-   `entity.create` / `entity.destroy` events.
+1. **Entity management** — The coordinator drains queued
+   `EntitySpawnRequest` messages from systems, allocates entity IDs, writes
+   component data into archetype tables, and broadcasts `entity.create` /
+   `entity.destroy` events.
 2. **Dependency graph** — The coordinator builds a conflict graph from the
    read/write sets of all registered systems.
 3. **Stage computation** — The conflict graph is partitioned into stages.
@@ -296,7 +298,9 @@ process. Systems are stateless — they receive data, compute, and return result
    `engine.component.changed.<system>`.
    f. Publish a `ChangesDone` sentinel on the same subject so the
    coordinator knows all changed data has been sent.
-   g. Ack the tick via `engine.coord.tick.done`.
+   g. Publish any `EntitySpawnRequest` messages to
+   `engine.entity.spawn.request` for entity creation.
+   h. Ack the tick via `engine.coord.tick.done`.
 4. On graceful shutdown, publish a `system.unregister` message so the
    coordinator removes the instance before the next tick.
 

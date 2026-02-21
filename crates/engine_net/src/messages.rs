@@ -47,6 +47,25 @@ pub struct EntityDestroyed {
     pub entity: Entity,
 }
 
+/// A system requests that the coordinator spawn a new entity with the given
+/// component data. Published on
+/// [`subjects::ENTITY_SPAWN_REQUEST`](crate::subjects::ENTITY_SPAWN_REQUEST).
+///
+/// The coordinator processes these between ticks, allocates entity IDs, writes
+/// the component data into the appropriate archetype, and broadcasts
+/// [`EntityCreated`] events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntitySpawnRequest {
+    /// The component types the new entity should have.
+    pub component_types: Vec<ComponentTypeId>,
+    /// Serialised component data, one entry per type (parallel with
+    /// `component_types`).
+    pub component_data: Vec<Vec<u8>>,
+    /// Byte sizes of each component type (parallel with `component_types`).
+    /// Needed so the coordinator can allocate archetype columns.
+    pub component_sizes: Vec<usize>,
+}
+
 // ── Component data ──────────────────────────────────────────────────────────
 
 /// A batch of component data for a set of entities.
@@ -220,5 +239,19 @@ mod tests {
         let bytes = rmp_serde::to_vec(&msg).unwrap();
         let restored: DataDone = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.tick_id, 77);
+    }
+
+    #[test]
+    fn test_entity_spawn_request_roundtrip() {
+        let msg = EntitySpawnRequest {
+            component_types: vec![ComponentTypeId(1), ComponentTypeId(2)],
+            component_data: vec![vec![1, 2, 3], vec![4, 5, 6]],
+            component_sizes: vec![12, 24],
+        };
+        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let restored: EntitySpawnRequest = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(restored.component_types.len(), 2);
+        assert_eq!(restored.component_data.len(), 2);
+        assert_eq!(restored.component_sizes, vec![12, 24]);
     }
 }

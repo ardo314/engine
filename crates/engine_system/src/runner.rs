@@ -198,6 +198,12 @@ impl SystemRunner {
             conn.publish_with_headers(&changed_subject, headers, &changes_done)
                 .await?;
 
+            // Publish any entity spawn requests to the coordinator.
+            for req in &ctx.spawn_requests {
+                conn.publish(engine_net::subjects::ENTITY_SPAWN_REQUEST, req)
+                    .await?;
+            }
+
             // Ack tick completion.
             let ack = TickAck {
                 tick_id: schedule.tick_id,

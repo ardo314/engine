@@ -24,7 +24,7 @@ use tracing::{debug, info, warn};
 
 use engine_net::NatsConnection;
 use engine_net::messages::{
-    self, ComponentShard, DataDone, SystemSchedule, SystemUnregister, TickAck,
+    self, ComponentShard, DataDone, EntitySpawnRequest, SystemSchedule, SystemUnregister, TickAck,
 };
 
 use crate::registry::SystemRegistry;
@@ -559,6 +559,11 @@ impl TickLoop {
             .subscribe(engine_net::subjects::SYSTEM_UNREGISTER)
             .await?;
 
+        // Subscribe to entity spawn requests from systems.
+        let mut spawn_sub = conn
+            .subscribe(engine_net::subjects::ENTITY_SPAWN_REQUEST)
+            .await?;
+
         info!(
             tick_rate = self.config.tick_rate,
             max_ticks = self.config.max_ticks,
@@ -600,6 +605,25 @@ impl TickLoop {
                         name: unreg.name,
                         instance_id: unreg.instance_id,
                     });
+                }
+            }
+
+            // Drain any pending entity spawn requests.
+            while let Ok(Some(msg)) = tokio::time::timeout(Duration::ZERO, spawn_sub.next()).await {
+                if let Ok(req) = engine_net::decode::<EntitySpawnRequest>(msg.payload.as_ref()) {
+                    if let Some(entity) = self.world.spawn_with_data(
+                        &req.component_types,
+                        &req.component_data,
+                        &req.component_sizes,
+                    ) {
+                        info!(
+                            entity = entity.id(),
+                            components = req.component_types.len(),
+                            "spawned entity from request"
+                        );
+                    } else {
+                        warn!("invalid entity spawn request — mismatched arrays");
+                    }
                 }
             }
 

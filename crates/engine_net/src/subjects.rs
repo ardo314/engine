@@ -22,6 +22,9 @@ pub const ENTITY_CREATE: &str = "engine.entity.create";
 /// Broadcasts entity destruction. Coordinator → *.
 pub const ENTITY_DESTROY: &str = "engine.entity.destroy";
 
+/// System requests entity creation. Systems → Coordinator.
+pub const ENTITY_SPAWN_REQUEST: &str = "engine.entity.spawn.request";
+
 // ── System management ───────────────────────────────────────────────────────
 
 /// System registers itself. System → Coordinator.
