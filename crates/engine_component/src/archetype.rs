@@ -34,25 +34,22 @@ impl ArchetypeId {
 
 /// A column in an archetype table, storing components of a single type.
 ///
-/// Components are stored as raw bytes for type-erased access. Each element is
-/// `item_size` bytes, laid out contiguously.
+/// Components are stored as serialised byte blobs (one `Vec<u8>` per entity).
+/// This supports variable-length encodings such as MessagePack.
 #[derive(Debug, Clone)]
 pub struct Column {
     /// The component type stored in this column.
     pub type_id: ComponentTypeId,
-    /// Size of a single component instance in bytes.
-    pub item_size: usize,
-    /// Raw byte storage. Length is always `item_size * entity_count`.
-    pub data: Vec<u8>,
+    /// Per-entity byte blobs, parallel with `ArchetypeTable::entities`.
+    pub data: Vec<Vec<u8>>,
 }
 
 impl Column {
     /// Create a new empty column for the given component type.
     #[must_use]
-    pub fn new(type_id: ComponentTypeId, item_size: usize) -> Self {
+    pub fn new(type_id: ComponentTypeId) -> Self {
         Self {
             type_id,
-            item_size,
             data: Vec::new(),
         }
     }
@@ -60,10 +57,7 @@ impl Column {
     /// Returns the number of component instances stored.
     #[must_use]
     pub fn len(&self) -> usize {
-        if self.item_size == 0 {
-            return 0;
-        }
-        self.data.len() / self.item_size
+        self.data.len()
     }
 
     /// Returns `true` if this column contains no components.
@@ -72,79 +66,27 @@ impl Column {
         self.data.is_empty()
     }
 
-    /// Push a component's raw bytes into the column.
+    /// Push a component's serialised bytes into the column.
     pub fn push_raw(&mut self, bytes: &[u8]) {
-        assert_eq!(
-            bytes.len(),
-            self.item_size,
-            "byte slice size mismatch: expected {}, got {}",
-            self.item_size,
-            bytes.len()
-        );
-        self.data.extend_from_slice(bytes);
+        self.data.push(bytes.to_vec());
     }
 
-    /// Get a reference to the raw bytes of the component at `index`.
+    /// Get a reference to the serialised bytes of the component at `index`.
     #[must_use]
     pub fn get_raw(&self, index: usize) -> Option<&[u8]> {
-        let start = index * self.item_size;
-        let end = start + self.item_size;
-        if end > self.data.len() {
-            return None;
-        }
-        Some(&self.data[start..end])
+        self.data.get(index).map(|v| v.as_slice())
     }
 
-    /// Get a mutable reference to the raw bytes of the component at `index`.
+    /// Get a mutable reference to the serialised bytes of the component at
+    /// `index`.
     #[must_use]
-    pub fn get_raw_mut(&mut self, index: usize) -> Option<&mut [u8]> {
-        let start = index * self.item_size;
-        let end = start + self.item_size;
-        if end > self.data.len() {
-            return None;
-        }
-        Some(&mut self.data[start..end])
+    pub fn get_raw_mut(&mut self, index: usize) -> Option<&mut Vec<u8>> {
+        self.data.get_mut(index)
     }
 
-    /// Push a typed component value into the column.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `T` matches the component type stored in this
-    /// column (same size and alignment).
-    pub unsafe fn push<T: Sized>(&mut self, value: T) {
-        assert_eq!(std::mem::size_of::<T>(), self.item_size);
-        let bytes =
-            // SAFETY: We read `size_of::<T>()` bytes from a valid `T` value.
-            unsafe { std::slice::from_raw_parts(&value as *const T as *const u8, self.item_size) };
-        self.data.extend_from_slice(bytes);
-        std::mem::forget(value);
-    }
-
-    /// Get a typed reference to the component at `index`.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `T` matches the component type stored in this
-    /// column.
-    #[must_use]
-    pub unsafe fn get<T: Sized>(&self, index: usize) -> Option<&T> {
-        let bytes = self.get_raw(index)?;
-        // SAFETY: Caller guarantees type match.
-        Some(unsafe { &*(bytes.as_ptr() as *const T) })
-    }
-
-    /// Get a typed mutable reference to the component at `index`.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `T` matches the component type stored in this
-    /// column.
-    #[must_use]
-    pub unsafe fn get_mut<T: Sized>(&mut self, index: usize) -> Option<&mut T> {
-        let bytes = self.get_raw_mut(index)?;
-        // SAFETY: Caller guarantees type match.
-        Some(unsafe { &mut *(bytes.as_mut_ptr() as *mut T) })
+    /// Remove the element at `index` by swap-removing (O(1)).
+    pub fn swap_remove(&mut self, index: usize) {
+        self.data.swap_remove(index);
     }
 }
 
@@ -168,12 +110,11 @@ pub struct ArchetypeTable {
 impl ArchetypeTable {
     /// Create a new, empty archetype table.
     #[must_use]
-    pub fn new(component_types: BTreeSet<ComponentTypeId>, item_sizes: &[usize]) -> Self {
+    pub fn new(component_types: BTreeSet<ComponentTypeId>) -> Self {
         let id = ArchetypeId::from_component_types(&component_types);
         let columns = component_types
             .iter()
-            .zip(item_sizes.iter())
-            .map(|(&type_id, &size)| Column::new(type_id, size))
+            .map(|&type_id| Column::new(type_id))
             .collect();
 
         Self {
@@ -252,19 +193,20 @@ mod tests {
 
     #[test]
     fn test_column_push_and_get() {
-        let mut col = Column::new(ComponentTypeId(1), std::mem::size_of::<f32>());
+        let mut col = Column::new(ComponentTypeId(1));
         let val: f32 = 3.14;
-        // SAFETY: Column type matches f32.
-        unsafe { col.push(val) };
+        let bytes = val.to_le_bytes();
+        col.push_raw(&bytes);
         assert_eq!(col.len(), 1);
-        let got = unsafe { col.get::<f32>(0) }.unwrap();
-        assert!((got - 3.14).abs() < f32::EPSILON);
+        let got = col.get_raw(0).unwrap();
+        let restored = f32::from_le_bytes(got.try_into().unwrap());
+        assert!((restored - 3.14).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_archetype_table_creation() {
         let types = make_types();
-        let table = ArchetypeTable::new(types.clone(), &[4, 8]);
+        let table = ArchetypeTable::new(types.clone());
         assert_eq!(table.component_types, types);
         assert!(table.is_empty());
         assert_eq!(table.columns.len(), 2);

@@ -41,12 +41,10 @@ async fn main() -> Result<()> {
                 let velocity = Velocity::new(1.0, 0.0, 0.0);
                 let vel_bytes =
                     engine_net::encode(&velocity).expect("failed to serialise Velocity");
-                let vel_size = std::mem::size_of::<Velocity>();
 
                 let request = EntitySpawnRequest {
                     component_types: vec![Velocity::component_type_id()],
                     component_data: vec![vel_bytes],
-                    component_sizes: vec![vel_size],
                 };
 
                 // Queue the spawn request — the system context gives us

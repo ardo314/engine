@@ -522,8 +522,7 @@ impl TickLoop {
                 && let Some(bytes) = shard.data.get(i)
                 && let Some(dst) = table.columns[col_idx].get_raw_mut(row)
             {
-                let copy_len = dst.len().min(bytes.len());
-                dst[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                *dst = bytes.clone();
             }
         }
     }
@@ -611,11 +610,10 @@ impl TickLoop {
             // Drain any pending entity spawn requests.
             while let Ok(Some(msg)) = tokio::time::timeout(Duration::ZERO, spawn_sub.next()).await {
                 if let Ok(req) = engine_net::decode::<EntitySpawnRequest>(msg.payload.as_ref()) {
-                    if let Some(entity) = self.world.spawn_with_data(
-                        &req.component_types,
-                        &req.component_data,
-                        &req.component_sizes,
-                    ) {
+                    if let Some(entity) = self
+                        .world
+                        .spawn_with_data(&req.component_types, &req.component_data)
+                    {
                         info!(
                             entity = entity.id(),
                             components = req.component_types.len(),
@@ -713,9 +711,9 @@ mod tests {
         let comp = ComponentTypeId(42);
         let mut types = BTreeSet::new();
         types.insert(comp);
-        let entity = tick_loop.world_mut().spawn(types, &[4]);
+        let entity = tick_loop.world_mut().spawn(types);
 
-        // Write initial component data (4 bytes of zeros).
+        // Write initial component data.
         let arch_id = tick_loop.world().entity_archetype(entity).unwrap();
         tick_loop
             .world_mut()

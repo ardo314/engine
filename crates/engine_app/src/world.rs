@@ -49,16 +49,12 @@ impl World {
     /// Allocate a new entity and place it into an archetype defined by the
     /// given component types.
     ///
-    /// The caller must separately write the component data into the returned
-    /// archetype table.
-    pub fn spawn(
-        &mut self,
-        component_types: BTreeSet<ComponentTypeId>,
-        item_sizes: &[usize],
-    ) -> Entity {
+    /// The caller must separately write the component data into the
+    /// archetype table's columns.
+    pub fn spawn(&mut self, component_types: BTreeSet<ComponentTypeId>) -> Entity {
         let entity = self.allocator.allocate();
 
-        let archetype_id = self.get_or_create_archetype(component_types.clone(), item_sizes);
+        let archetype_id = self.get_or_create_archetype(component_types.clone());
 
         // Add the entity to the archetype table's entity list.
         if let Some(table) = self.archetypes.get_mut(&archetype_id) {
@@ -72,26 +68,23 @@ impl World {
     /// Allocate a new entity and write serialised component data into its
     /// archetype.
     ///
-    /// `component_types`, `component_data`, and `component_sizes` must be
-    /// parallel slices — one entry per component. The component data is raw
-    /// MessagePack bytes that get written directly into the archetype columns.
+    /// `component_types` and `component_data` must be parallel slices — one
+    /// entry per component. The component data is serialised bytes (e.g.
+    /// MessagePack) that get stored directly in the archetype columns.
     ///
     /// Returns the new entity, or `None` if the slices are mismatched.
     pub fn spawn_with_data(
         &mut self,
         component_types: &[ComponentTypeId],
         component_data: &[Vec<u8>],
-        component_sizes: &[usize],
     ) -> Option<Entity> {
-        if component_types.len() != component_data.len()
-            || component_types.len() != component_sizes.len()
-        {
+        if component_types.len() != component_data.len() {
             return None;
         }
 
         let type_set: BTreeSet<ComponentTypeId> = component_types.iter().copied().collect();
         let entity = self.allocator.allocate();
-        let archetype_id = self.get_or_create_archetype(type_set, component_sizes);
+        let archetype_id = self.get_or_create_archetype(type_set);
 
         if let Some(table) = self.archetypes.get_mut(&archetype_id) {
             table.entities.push(entity);
@@ -117,20 +110,9 @@ impl World {
                 && let Some(pos) = table.entities.iter().position(|&e| e == entity)
             {
                 table.entities.swap_remove(pos);
-                // Also swap-remove from each column.
                 for col in &mut table.columns {
                     if col.len() > pos {
-                        let last = col.len() - 1;
-                        if pos != last {
-                            let item_size = col.item_size;
-                            let last_start = last * item_size;
-                            let pos_start = pos * item_size;
-                            // Copy last element into the removed position.
-                            for i in 0..item_size {
-                                col.data[pos_start + i] = col.data[last_start + i];
-                            }
-                        }
-                        col.data.truncate(last * col.item_size);
+                        col.swap_remove(pos);
                     }
                 }
             }
@@ -144,13 +126,12 @@ impl World {
     fn get_or_create_archetype(
         &mut self,
         component_types: BTreeSet<ComponentTypeId>,
-        item_sizes: &[usize],
     ) -> ArchetypeId {
         if let Some(&id) = self.type_set_to_archetype.get(&component_types) {
             return id;
         }
 
-        let table = ArchetypeTable::new(component_types.clone(), item_sizes);
+        let table = ArchetypeTable::new(component_types.clone());
         let id = table.id;
         self.archetypes.insert(id, table);
         self.type_set_to_archetype.insert(component_types, id);
@@ -228,7 +209,7 @@ mod tests {
         types.insert(ComponentTypeId(1));
         types.insert(ComponentTypeId(2));
 
-        let e = world.spawn(types, &[4, 8]);
+        let e = world.spawn(types);
         assert!(e.is_valid());
         assert_eq!(world.entity_count(), 1);
         assert_eq!(world.archetype_count(), 1);
@@ -240,7 +221,7 @@ mod tests {
         let mut types = BTreeSet::new();
         types.insert(ComponentTypeId(1));
 
-        let e = world.spawn(types, &[4]);
+        let e = world.spawn(types);
         assert!(world.despawn(e));
         assert_eq!(world.entity_count(), 0);
     }
@@ -255,8 +236,8 @@ mod tests {
         let mut types_a = BTreeSet::new();
         types_a.insert(ComponentTypeId(1));
 
-        let _ = world.spawn(types_ab, &[4, 4]);
-        let _ = world.spawn(types_a, &[4]);
+        let _ = world.spawn(types_ab);
+        let _ = world.spawn(types_a);
 
         // Query for type 1 — both archetypes match.
         let matches = world.matching_archetypes(&[ComponentTypeId(1)]);

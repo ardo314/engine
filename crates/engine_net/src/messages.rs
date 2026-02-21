@@ -61,9 +61,6 @@ pub struct EntitySpawnRequest {
     /// Serialised component data, one entry per type (parallel with
     /// `component_types`).
     pub component_data: Vec<Vec<u8>>,
-    /// Byte sizes of each component type (parallel with `component_types`).
-    /// Needed so the coordinator can allocate archetype columns.
-    pub component_sizes: Vec<usize>,
 }
 
 // ── Component data ──────────────────────────────────────────────────────────
@@ -246,12 +243,10 @@ mod tests {
         let msg = EntitySpawnRequest {
             component_types: vec![ComponentTypeId(1), ComponentTypeId(2)],
             component_data: vec![vec![1, 2, 3], vec![4, 5, 6]],
-            component_sizes: vec![12, 24],
         };
         let bytes = rmp_serde::to_vec(&msg).unwrap();
         let restored: EntitySpawnRequest = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.component_types.len(), 2);
         assert_eq!(restored.component_data.len(), 2);
-        assert_eq!(restored.component_sizes, vec![12, 24]);
     }
 }
