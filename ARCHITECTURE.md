@@ -113,26 +113,24 @@ engine/
 ## NATS Subject Hierarchy
 
 All subjects are prefixed with `engine.` to namespace within a shared NATS
-cluster.
+cluster. The subjects fall into four groups:
 
-| Subject                             | Direction               | Payload                                         | Purpose                                                                                                                                                           |
-| ----------------------------------- | ----------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine.coord.tick`                 | Coordinator → Systems   | `TickStart { tick_id, dt }`                     | Signals start of a new tick.                                                                                                                                      |
-| `engine.coord.tick.done`            | Systems → Coordinator   | `TickAck { tick_id, instance_id }`              | System instance acknowledges tick completion.                                                                                                                     |
-| `engine.entity.create`              | Coordinator → \*        | `EntityCreated { entity, archetype }`           | Broadcasts entity creation.                                                                                                                                       |
-| `engine.entity.destroy`             | Coordinator → \*        | `EntityDestroyed { entity }`                    | Broadcasts entity destruction.                                                                                                                                    |
-| `engine.entity.spawn.request`       | Systems → Coordinator   | `EntitySpawnRequest { types, data }`            | System requests entity creation with component data. Processed between ticks.                                                                                     |
-| `engine.component.set.<system>`     | Coordinator → System(s) | `ComponentShard` or `DataDone` sentinel         | Sends batches of component data followed by a `DataDone` sentinel (tagged via `msg-type` header) so the system knows all data has been sent.                      |
-| `engine.component.changed.<system>` | Systems → Coordinator   | `ComponentShard` or `ChangesDone` sentinel      | System publishes mutated component data back, followed by a `ChangesDone` sentinel (tagged via `msg-type` header) so the coordinator knows when to stop draining. |
-| `engine.system.register`            | System → Coordinator    | `SystemDescriptor { name, query, instance_id }` | System registers itself and its query on startup. Queued and applied before the next tick.                                                                        |
-| `engine.system.unregister`          | System → Coordinator    | `SystemUnregister { name, instance_id }`        | System unregisters an instance on shutdown. Queued and applied before the next tick.                                                                              |
-| `engine.system.schedule.<system>`   | Coordinator → System(s) | `SystemSchedule { tick_id, shard_range }`       | Tells system instance(s) to execute on the given shard. Delivered via queue group.                                                                                |
-| `engine.system.heartbeat`           | Systems → Coordinator   | `Heartbeat { instance_id, system, load }`       | Periodic health & load report.                                                                                                                                    |
-| `engine.query.request`              | Any → Coordinator       | `QueryRequest { query }`                        | Ad-hoc query (e.g. from editor).                                                                                                                                  |
-| `engine.query.response`             | Coordinator → Requester | `QueryResponse { entities[], data[] }`          | Response to an ad-hoc query.                                                                                                                                      |
+- **Tick coordination** — `engine.coord.tick`, `engine.coord.tick.done`
+- **Entity lifecycle** — `engine.entity.create`, `engine.entity.destroy`,
+  `engine.entity.spawn.request`
+- **Component data** — `engine.component.set.<system>`,
+  `engine.component.changed.<system>` (with sentinel messages for
+  end-of-stream signalling)
+- **System management** — `engine.system.register`,
+  `engine.system.unregister`, `engine.system.schedule.<system>`,
+  `engine.system.heartbeat`
+- **Ad-hoc queries** — `engine.query.request`, `engine.query.response`
 
 > JetStream is used for `engine.component.*` subjects so that late-joining
 > system instances can replay the latest state.
+
+For the complete subject table, message schemas, header conventions, sentinel
+protocol, and sequence diagrams, see **`PROTOCOL.md`**.
 
 ---
 
@@ -220,20 +218,11 @@ Physics and AI run in parallel. Movement runs after both complete.
 3. **Stage computation** — The conflict graph is partitioned into stages.
    Systems within a stage have no conflicts and run in parallel. Stages
    execute sequentially.
-4. **Per-stage execution** — For each stage:
-   a. The coordinator subscribes to `component.changed.<system>` for each
-   system in the stage.
-   b. The coordinator publishes `component.set.<system>` data shards followed
-   by a `DataDone` sentinel so each system instance knows all data has arrived.
-   c. The coordinator publishes `system.schedule.<system>` messages.
-   d. Systems drain data shards until the `DataDone` sentinel, then execute
-   and publish `component.changed.<system>` shards, followed by a
-   `ChangesDone` sentinel on the same subject.
-   e. The coordinator drains changed data until it receives a `ChangesDone`
-   sentinel from every instance, then **merges** changed components into
-   the canonical store.
-   f. Systems ack via `coord.tick.done`; the coordinator waits for all acks
-   before proceeding to the next stage.
+4. **Per-stage execution** — For each stage the coordinator sends component
+   data to each system, the systems execute and publish their changes back,
+   and the coordinator merges the results before proceeding to the next
+   stage. (See the **Per-Tick Execution** sequence in `PROTOCOL.md` for the
+   exact message exchange, sentinel protocol, and ack flow.)
 5. **Broadcast events** — After all stages complete, the coordinator
    broadcasts any deferred events.
 6. **Advance tick** — The coordinator increments the tick counter and loops.
@@ -282,71 +271,38 @@ process. Systems are stateless — they receive data, compute, and return result
 
 ### Lifecycle
 
-1. Connect to NATS and publish a `system.register` message declaring its
-   `instance_id`, system `name`, and `QueryDescriptor`. The coordinator
-   queues the registration and applies it before the next tick.
-2. Subscribe to `engine.system.schedule.<system>` using a **queue group** named
-   after the system (e.g. `q.physics`). This means NATS automatically
-   load-balances shard messages across all instances of this system.
-3. On each tick:
-   a. Receive a `SystemSchedule` message with the shard range.
-   b. Receive component data via `engine.component.set.<system>`, draining
-   until a `DataDone` sentinel arrives (tagged via `msg-type` header).
-   c. Deserialise into local archetype tables.
-   d. Execute the system function.
-   e. Serialise and publish changed component data via
-   `engine.component.changed.<system>`.
-   f. Publish a `ChangesDone` sentinel on the same subject so the
-   coordinator knows all changed data has been sent.
-   g. Publish any `EntitySpawnRequest` messages to
-   `engine.entity.spawn.request` for entity creation.
-   h. Ack the tick via `engine.coord.tick.done`.
-4. On graceful shutdown, publish a `system.unregister` message so the
-   coordinator removes the instance before the next tick.
+1. **Register** — Connect to NATS and publish a `system.register` message
+   declaring `instance_id`, system `name`, and `QueryDescriptor`. The
+   coordinator queues the registration and applies it before the next tick.
+2. **Subscribe** — Subscribe to the system's schedule and data subjects
+   using a NATS queue group for load balancing.
+3. **Per-tick loop** — Receive component data shards, execute the system
+   function, publish changed data back, and acknowledge tick completion.
+4. **Shutdown** — Publish a `system.unregister` message so the coordinator
+   removes the instance before the next tick.
+
+For the exact message exchange (subjects, sentinels, ack flow), see the
+**Per-Tick Execution** sequence in `PROTOCOL.md`.
 
 ### Horizontal Scaling
 
 To scale a computationally expensive system (e.g. physics), launch additional
-instances of the same system binary. Because they share a NATS queue group, the
-coordinator's shard messages are automatically distributed:
+instances of the same system binary. They share a NATS queue group
+(`q.<system>`), so the coordinator's shard messages are automatically
+distributed — no coordinator changes needed.
 
-```
-                ┌─────────────────┐
-                │   Coordinator   │
-                └────────┬────────┘
-                         │
-        engine.system.schedule.physics
-                (queue: q.physics)
-                         │
-            ┌────────────┼────────────┐
-            ▼            ▼            ▼
-      ┌──────────┐ ┌──────────┐ ┌──────────┐
-      │ Physics  │ │ Physics  │ │ Physics  │
-      │   (#1)   │ │   (#2)   │ │   (#3)   │
-      └──────────┘ └──────────┘ └──────────┘
-```
-
-No coordinator changes are needed — add or remove instances at any time.
+See **Queue Groups & Horizontal Scaling** in `PROTOCOL.md` for details.
 
 ---
 
 ## Serialisation
 
 All messages are serialised with **MessagePack** (`rmp-serde`) for compact
-binary encoding. The envelope format:
+binary encoding. NATS headers carry routing metadata (`msg-type`, `tick-id`,
+`instance-id`) so systems can filter without deserialising the payload.
 
-```
-┌────────────┬───────────────────────────┐
-│ NATS Hdrs  │ MessagePack payload       │
-├────────────┼───────────────────────────┤
-│ msg-type   │ { ... message fields }    │
-│ tick-id    │                           │
-│ instance-id│                           │
-└────────────┴───────────────────────────┘
-```
-
-NATS headers carry routing metadata so systems can filter without deserialising
-the payload.
+For the full envelope format, encoding rules, and header key reference, see
+**`PROTOCOL.md`**.
 
 ---
 
@@ -441,12 +397,18 @@ crash.
 
 ## Error Handling & Resilience
 
-| Failure           | Mitigation                                                                                                                                                                                                                                                |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| System crash      | Coordinator detects missing `tick.done` ack within timeout → if other instances of the same system exist in the queue group, NATS already routed their shards. If no instances remain, the coordinator skips that system for the tick and logs a warning. |
-| Coordinator crash | JetStream retains the last-known component state. A new coordinator replays from the stream and resumes.                                                                                                                                                  |
-| NATS disconnect   | `async-nats` reconnects automatically. Systems buffer locally and retry.                                                                                                                                                                                  |
-| Slow system       | Scaling the system horizontally (more instances in the queue group) distributes load. Coordinator enforces a tick deadline; if an instance misses it, its results are dropped and the tick proceeds.                                                      |
+The system is designed for graceful degradation:
+
+- **System crash** — Coordinator detects missing tick ack. If other instances
+  exist in the queue group, NATS already rerouted shards. Otherwise the system
+  is skipped for that tick.
+- **Coordinator crash** — JetStream retains component state; a new coordinator
+  replays from the stream and resumes.
+- **NATS disconnect** — `async-nats` reconnects automatically.
+- **Slow system** — Scale horizontally or let the tick deadline drop results.
+
+For protocol-level error types (`NetError` variants) and timeout values, see
+**`PROTOCOL.md`**.
 
 ---
 

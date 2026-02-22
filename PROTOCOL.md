@@ -6,7 +6,12 @@ convention, serialisation format, and the exact sequence of messages exchanged
 during system registration, tick execution, entity lifecycle, and ad-hoc
 queries.
 
-For high-level architecture and design rationale, see `ARCHITECTURE.md`.
+Related documents:
+
+- **`ARCHITECTURE.md`** — High-level design, crate responsibilities, scheduling
+  algorithm, component storage, query system, and design rationale.
+- **`AGENTS.md`** — Coding conventions, style rules, and instructions for AI
+  agents working on this codebase.
 
 ---
 
@@ -595,6 +600,9 @@ Multiple instances of the same system form a NATS **queue group** named
 messages to the system's subjects; NATS delivers each message to exactly one
 instance in the queue group.
 
+For the architectural rationale behind this scaling model, see
+**`ARCHITECTURE.md` → Design Decisions & Rationale**.
+
 ```
                     engine.system.schedule.physics
                         (queue: q.physics)
@@ -631,7 +639,9 @@ NATS JetStream is used for `engine.component.*` subjects so that:
 
 ## Error Handling
 
-Network errors are represented by `engine_net::NetError`:
+Network errors are represented by `engine_net::NetError`.
+For architectural resilience strategies (crash recovery, slow systems, etc.),
+see **`ARCHITECTURE.md` → Error Handling & Resilience**.
 
 | Variant         | Cause                                     |
 | --------------- | ----------------------------------------- |

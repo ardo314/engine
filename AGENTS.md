@@ -36,7 +36,8 @@ engine/
 │   └── src-tauri/        # Tauri Rust backend
 ├── examples/
 │   └── components/       # Example component definitions
-├── ARCHITECTURE.md       # Distributed ECS design document
+├── ARCHITECTURE.md       # High-level design, crate map, scheduling, storage
+├── PROTOCOL.md           # Wire protocol: subjects, messages, sequences
 ├── AGENTS.md             # This file
 ├── Cargo.toml            # Workspace manifest
 └── README.md
@@ -110,7 +111,9 @@ engine/
 ## NATS Conventions
 
 - All subjects are prefixed with `engine.`.
-- See `ARCHITECTURE.md` for the full subject hierarchy.
+- See `PROTOCOL.md` for the full subject hierarchy, message schemas, header
+  conventions, sentinel protocol, and sequence diagrams.
+- See `ARCHITECTURE.md` for the high-level design rationale behind NATS usage.
 - Use NATS headers for routing metadata (`msg-type`, `tick-id`, `instance-id`).
 - Never put routing information in the payload.
 - Use JetStream for any data that must survive restarts.
@@ -136,26 +139,44 @@ engine/
 
 ---
 
-## Architecture ↔ Code Consistency
+## Documentation ↔ Code Consistency
 
-`ARCHITECTURE.md` is the **source of truth** for high-level design. Code is the
-source of truth for implementation detail. The two must stay in sync:
+Three documents describe the engine design. Each has a distinct scope:
 
-- **Code changes → update architecture.** When you add, remove, or modify a
-  crate, NATS subject, message type, ECS concept, or system lifecycle step,
-  update the corresponding section in `ARCHITECTURE.md` to reflect the change
-  at a high level (not line-by-line — keep it conceptual).
-- **Architecture changes → update code.** When you change a design decision,
-  subject hierarchy, or crate responsibility in `ARCHITECTURE.md`, propagate
-  the change to the relevant code, types, and module docs.
+| Document          | Scope                                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ARCHITECTURE.md` | High-level design: crate map, ECS concepts, scheduling, storage, query system, design rationale.                         |
+| `PROTOCOL.md`     | Wire protocol: NATS subjects, message schemas, header keys, sentinel protocol, sequence diagrams, error types, timeouts. |
+| `AGENTS.md`       | Coding conventions, style rules, and instructions for AI agents.                                                         |
+
+All three documents must stay in sync **with each other** and **with the
+implementation**. Treat the documents as the source of truth for their
+respective scopes, and the code as the source of truth for implementation
+detail.
+
+### Rules
+
+- **Code changes → update documentation.** When you add, remove, or modify a
+  crate, NATS subject, message type, ECS concept, system lifecycle step, or
+  wire format, update the corresponding section in the relevant document(s)
+  to reflect the change. Keep updates conceptual in `ARCHITECTURE.md` and
+  precise in `PROTOCOL.md`.
+- **Documentation changes → update code.** When you change a design decision
+  in `ARCHITECTURE.md`, a message schema in `PROTOCOL.md`, or a convention in
+  `AGENTS.md`, propagate the change to the relevant code, types, and module
+  docs.
 - **Check alignment before implementing.** Before starting work, read the
-  relevant sections of `ARCHITECTURE.md` and verify the planned change is
-  consistent with the documented design. If it is **not**, stop and ask the
-  user whether the change is intentional. Do not silently diverge from the
-  architecture.
+  relevant sections of `ARCHITECTURE.md` and `PROTOCOL.md` and verify the
+  planned change is consistent with the documented design. If it is **not**,
+  stop and ask the user whether the change is intentional. Do not silently
+  diverge from the documentation.
 - **Flag unintentional drift.** If you discover existing code that contradicts
-  `ARCHITECTURE.md` (or vice versa), notify the user and ask how to resolve
-  the inconsistency before proceeding.
+  any document (or vice versa), notify the user and ask how to resolve the
+  inconsistency before proceeding.
+- **No duplication across documents.** Each fact should live in exactly one
+  document. Cross-reference the other documents instead of repeating content.
+  If you notice duplicate content creeping in, refactor it so the detail lives
+  in the document that owns that scope and the others link to it.
 
 ---
 
