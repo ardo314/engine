@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_velocity_serialization() {
         let v = Velocity::new(1.0, 2.0, 3.0);
-        let bytes = rmp_serde::to_vec(&v).unwrap();
+        let bytes = rmp_serde::to_vec_named(&v).unwrap();
         let restored: Velocity = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(v, restored);
     }
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn test_name_component() {
         let name = Name::new("Player");
-        let bytes = rmp_serde::to_vec(&name).unwrap();
+        let bytes = rmp_serde::to_vec_named(&name).unwrap();
         let restored: Name = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(name, restored);
     }

@@ -1,19 +1,26 @@
 //! MessagePack codec helpers.
 //!
 //! Thin wrappers around `rmp-serde` for encoding and decoding messages. All
-//! network payloads use MessagePack for compact binary serialisation.
+//! network payloads use **named** (map-style) MessagePack encoding, where
+//! struct fields are serialised as `{"field_name": value, …}` rather than
+//! positional arrays. This makes the wire format self-describing and
+//! language-neutral — any MessagePack decoder in any language can read the
+//! fields by name without knowing Rust struct field ordering.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::NetError;
 
-/// Encode a value to MessagePack bytes.
+/// Encode a value to **named** (map-style) MessagePack bytes.
+///
+/// Uses `rmp_serde::to_vec_named` so struct fields appear as string keys in
+/// the MessagePack output. This is essential for polyglot interoperability.
 ///
 /// # Errors
 ///
 /// Returns [`NetError::Encode`] if serialisation fails.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, NetError> {
-    rmp_serde::to_vec(value).map_err(NetError::Encode)
+    rmp_serde::to_vec_named(value).map_err(NetError::Encode)
 }
 
 /// Decode a value from MessagePack bytes.

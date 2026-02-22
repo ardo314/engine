@@ -44,6 +44,14 @@ pub const QUERY_REQUEST: &str = "engine.query.request";
 /// Ad-hoc query response. Coordinator → Requester.
 pub const QUERY_RESPONSE: &str = "engine.query.response";
 
+// ── Schema registry ─────────────────────────────────────────────────────────
+
+/// Request component schemas from the coordinator's registry. Any → Coordinator.
+pub const SCHEMA_REQUEST: &str = "engine.schema.request";
+
+/// Response containing component schemas. Coordinator → Requester.
+pub const SCHEMA_RESPONSE: &str = "engine.schema.response";
+
 // ── Dynamic subject builders ────────────────────────────────────────────────
 
 /// Build the subject for sending component data to a specific system.

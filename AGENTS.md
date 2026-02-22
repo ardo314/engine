@@ -77,8 +77,26 @@ engine/
 
 - All types that cross the network boundary must derive `serde::Serialize`
   and `serde::Deserialize`.
-- Use `rmp-serde` (MessagePack) for wire format.
-- Use `serde_json` only for human-readable config files.
+- Use `rmp-serde` (MessagePack) for wire format. Always use **named (map)
+  encoding** (`rmp_serde::to_vec_named`) — never `rmp_serde::to_vec`
+  (array encoding). Named encoding makes payloads self-describing for
+  polyglot consumers.
+- Use `serde_json` only for human-readable config files and component schema
+  definitions.
+
+### Polyglot & Component Identity
+
+- `ComponentTypeId` is derived from a component's **string name** using the
+  FNV-1a 64-bit hash. See `PROTOCOL.md` for the algorithm specification.
+- Component `type_name()` values must be **short PascalCase identifiers**
+  (e.g. `"Transform3D"`, not `"engine::math::Transform3D"`). Two components
+  with the same name are the same type.
+- When adding a new component, ensure `type_name()` does not collide with
+  existing names.
+- Systems may include `ComponentSchema` entries (JSON Schema) in their
+  `SystemDescriptor` to describe component layouts for non-Rust consumers.
+- Never use Rust's `std::any::TypeId` for component identity — it is
+  non-deterministic across compilations and language-specific.
 
 ### ECS-Specific Rules
 

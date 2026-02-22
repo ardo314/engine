@@ -3,34 +3,72 @@
 //! Every piece of data stored in the ECS must implement [`Component`]. The trait
 //! requires `Send + Sync + 'static` so components can be safely shared across
 //! async boundaries and transported over the network.
-
-use std::any::TypeId;
+//!
+//! ## Polyglot Type Identity
+//!
+//! [`ComponentTypeId`] is derived from the component's **string name** using
+//! the FNV-1a 64-bit hash algorithm. This is deterministic and
+//! language-neutral — any language can compute the same ID for a given name.
+//! See `PROTOCOL.md` for the algorithm specification.
 
 use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
 
-/// A unique identifier for a component type, derived from [`TypeId`].
+/// A unique identifier for a component type, derived from its string name
+/// using the FNV-1a 64-bit hash algorithm.
 ///
-/// Two components of the same Rust type will always produce the same
-/// `ComponentTypeId`. The inner value is an opaque `u64` hash — do not rely
-/// on its numeric value being stable across compiler versions.
+/// The ID is deterministic and language-neutral: any implementation in any
+/// language that applies FNV-1a to the same UTF-8 name bytes will produce
+/// the same `ComponentTypeId`. See `PROTOCOL.md` for the algorithm
+/// specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct ComponentTypeId(pub u64);
 
 impl ComponentTypeId {
-    /// Compute the [`ComponentTypeId`] for a concrete type `T`.
+    /// FNV-1a 64-bit offset basis.
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+    /// FNV-1a 64-bit prime.
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+    /// Compute the [`ComponentTypeId`] from a component's string name using
+    /// the FNV-1a 64-bit hash algorithm.
+    ///
+    /// This is the **canonical** way to derive a `ComponentTypeId`. The
+    /// algorithm is language-neutral — any implementation that applies
+    /// FNV-1a to the same UTF-8 bytes will produce the same result.
+    ///
+    /// # Algorithm (FNV-1a 64-bit)
+    ///
+    /// ```text
+    /// hash = 0xcbf29ce484222325          (offset basis)
+    /// for each byte in name.as_bytes():
+    ///     hash = hash XOR byte
+    ///     hash = hash * 0x00000100000001b3  (prime)
+    /// return hash
+    /// ```
     #[must_use]
-    pub fn of<T: 'static>() -> Self {
-        // TypeId doesn't expose its inner bits publicly, so we hash it.
-        let type_id = TypeId::of::<T>();
-        let hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            type_id.hash(&mut hasher);
-            hasher.finish()
-        };
+    pub const fn from_name(name: &str) -> Self {
+        let bytes = name.as_bytes();
+        let mut hash = Self::FNV_OFFSET_BASIS;
+        let mut i = 0;
+        while i < bytes.len() {
+            hash ^= bytes[i] as u64;
+            hash = hash.wrapping_mul(Self::FNV_PRIME);
+            i += 1;
+        }
         Self(hash)
+    }
+
+    /// Compute the [`ComponentTypeId`] for a Rust component type `T`.
+    ///
+    /// This calls `T::type_name()` and hashes it with FNV-1a, producing
+    /// the same result as [`ComponentTypeId::from_name`] with the same
+    /// string.
+    #[must_use]
+    pub fn of<T: Component>() -> Self {
+        Self::from_name(T::type_name())
     }
 }
 
@@ -78,8 +116,11 @@ pub trait Component: Send + Sync + 'static + Serialize + for<'de> Deserialize<'d
     fn type_name() -> &'static str;
 
     /// Returns the [`ComponentTypeId`] for this component.
+    ///
+    /// The default implementation hashes [`Component::type_name()`] with
+    /// FNV-1a 64-bit, producing a deterministic, language-neutral ID.
     fn component_type_id() -> ComponentTypeId {
-        ComponentTypeId::of::<Self>()
+        ComponentTypeId::from_name(Self::type_name())
     }
 
     /// Returns the [`ComponentMeta`] descriptor for this component type.
@@ -99,7 +140,7 @@ pub trait Component: Send + Sync + 'static + Serialize + for<'de> Deserialize<'d
                 assert!(bytes.len() >= std::mem::size_of::<Self>());
                 // SAFETY: Caller guarantees `bytes` points to a valid `Self`.
                 let value = unsafe { &*(bytes.as_ptr() as *const Self) };
-                rmp_serde::to_vec(value)
+                rmp_serde::to_vec_named(value)
             },
             deserialize_fn: |bytes: &[u8]| {
                 let value: Self = rmp_serde::from_slice(bytes)
@@ -150,6 +191,24 @@ mod tests {
     }
 
     #[test]
+    fn test_component_type_id_matches_from_name() {
+        // The trait method and the standalone function must produce the same ID.
+        let from_trait = Health::component_type_id();
+        let from_name = ComponentTypeId::from_name("Health");
+        assert_eq!(from_trait, from_name);
+    }
+
+    #[test]
+    fn test_component_type_id_from_name_is_deterministic() {
+        // FNV-1a of "Health" — a known constant that any language can verify.
+        let id = ComponentTypeId::from_name("Health");
+        // Re-computing must yield the same value.
+        assert_eq!(id, ComponentTypeId::from_name("Health"));
+        // Different names must differ.
+        assert_ne!(id, ComponentTypeId::from_name("Velocity"));
+    }
+
+    #[test]
     fn test_component_type_id_differs_between_types() {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         struct Velocity {
@@ -163,6 +222,15 @@ mod tests {
         }
 
         assert_ne!(Health::component_type_id(), Velocity::component_type_id());
+    }
+
+    #[test]
+    fn test_fnv1a_known_vector() {
+        // FNV-1a 64-bit of empty string is the offset basis itself.
+        assert_eq!(
+            ComponentTypeId::from_name(""),
+            ComponentTypeId(0xcbf2_9ce4_8422_2325)
+        );
     }
 
     #[test]
@@ -183,7 +251,7 @@ mod tests {
             current: 80.0,
             max: 100.0,
         };
-        let bytes = rmp_serde::to_vec(&health).unwrap();
+        let bytes = rmp_serde::to_vec_named(&health).unwrap();
         let restored: Health = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(health, restored);
     }

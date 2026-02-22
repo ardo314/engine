@@ -36,6 +36,9 @@ Related documents:
   - [Heartbeat](#heartbeat)
   - [QueryRequest](#queryrequest)
   - [QueryResponse](#queryresponse)
+  - [ComponentSchema](#componentschema)
+  - [SchemaRequest](#schemarequest)
+  - [SchemaResponse](#schemaresponse)
 - [Sequences](#sequences)
   - [System Registration](#system-registration)
   - [Per-Tick Execution](#per-tick-execution)
@@ -47,6 +50,8 @@ Related documents:
 - [JetStream Persistence](#jetstream-persistence)
 - [Error Handling](#error-handling)
 - [Timeouts](#timeouts)
+- [Component Type Identity (FNV-1a)](#component-type-identity-fnv-1a)
+- [Polyglot Encoding Conventions](#polyglot-encoding-conventions)
 
 ---
 
@@ -82,12 +87,20 @@ metadata lives exclusively in NATS headers — never in the payload.
 
 ### Encoding Rules
 
-- **Payloads**: MessagePack via `rmp_serde::to_vec` / `rmp_serde::from_slice`.
+- **Payloads**: MessagePack via `rmp_serde::to_vec_named` /
+  `rmp_serde::from_slice`. The `_named` variant produces **map-encoded**
+  MessagePack where each struct field is keyed by its string name, making
+  payloads self-describing and readable by any language.
 - **Component data within shards**: Each individual component value is
-  independently MessagePack-encoded into a `Vec<u8>`, then wrapped inside the
-  outer `ComponentShard` MessagePack envelope.
+  independently MessagePack-encoded (map format) into a `Vec<u8>`, then
+  wrapped inside the outer `ComponentShard` MessagePack envelope.
 - **No JSON on the wire**: JSON is reserved for human-readable configuration
-  files only.
+  files and component schema definitions (see
+  [ComponentSchema](#componentschema)). Component **data** always uses
+  MessagePack.
+- **Named (map) encoding is mandatory**: All producers must use map-encoded
+  MessagePack (field names as string keys). Array-encoded payloads (positional
+  fields) are not supported and may fail to decode in non-Rust consumers.
 
 ---
 
@@ -133,6 +146,8 @@ cluster.
 | `engine.system.heartbeat`     | Systems → Coordinator   | `Heartbeat`          | Periodic health & load report.        |
 | `engine.query.request`        | Any → Coordinator       | `QueryRequest`       | Ad-hoc query (e.g. from editor).      |
 | `engine.query.response`       | Coordinator → Requester | `QueryResponse`      | Response to an ad-hoc query.          |
+| `engine.schema.request`       | Any → Coordinator       | `SchemaRequest`      | Request component schemas.            |
+| `engine.schema.response`      | Coordinator → Requester | `SchemaResponse`     | Response with component schemas.      |
 
 ### Dynamic Subjects
 
@@ -312,14 +327,17 @@ Subject: engine.system.register
 Direction: System → Coordinator
 ```
 
-| Field         | Type              | Description                                                   |
-| ------------- | ----------------- | ------------------------------------------------------------- |
-| `name`        | `String`          | Human-readable system name (e.g. `"physics"`).                |
-| `query`       | `QueryDescriptor` | Data access requirements (reads, writes, optionals, filters). |
-| `instance_id` | `String`          | UUID unique to this process instance.                         |
+| Field               | Type                   | Description                                                                           |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| `name`              | `String`               | Human-readable system name (e.g. `"physics"`).                                        |
+| `query`             | `QueryDescriptor`      | Data access requirements (reads, writes, optionals, filters).                         |
+| `instance_id`       | `String`               | UUID unique to this process instance.                                                 |
+| `component_schemas` | `Vec<ComponentSchema>` | Schemas for component types this system reads or writes (optional, defaults to `[]`). |
 
 Multiple instances of the same system share the `name` but have distinct
-`instance_id` values.
+`instance_id` values. The `component_schemas` field allows the coordinator to
+build a shared component registry for polyglot interop — see
+[ComponentSchema](#componentschema).
 
 #### QueryDescriptor
 
@@ -337,6 +355,20 @@ Multiple instances of the same system share the `name` but have distinct
 | `With(id)`    | `ComponentTypeId` | Entity must have this component type.             |
 | `Without(id)` | `ComponentTypeId` | Entity must not have this component type.         |
 | `Changed(id)` | `ComponentTypeId` | Only match entities where this component changed. |
+
+#### QueryFilter MessagePack Encoding
+
+`QueryFilter` is encoded as a **serde externally-tagged enum**. In named
+MessagePack, each variant becomes a single-entry map where the key is the
+variant name and the value is the inner `ComponentTypeId`:
+
+```json
+{"With": 12345}       // With(ComponentTypeId(12345))
+{"Without": 67890}    // Without(ComponentTypeId(67890))
+{"Changed": 11111}    // Changed(ComponentTypeId(11111))
+```
+
+Non-Rust implementations must produce/consume this tagged-map format.
 
 ---
 
@@ -421,6 +453,76 @@ Direction: Coordinator → Requester
 | ---------- | --------------------- | --------------------------------------- |
 | `entities` | `Vec<Entity>`         | Matching entity IDs.                    |
 | `shards`   | `Vec<ComponentShard>` | Component data for each requested type. |
+
+---
+
+### ComponentSchema
+
+Describes the schema of a component type for polyglot interoperability. Systems
+include component schemas when they register (via `SystemDescriptor`), and they
+can also be queried on-demand via `SchemaRequest` / `SchemaResponse`.
+
+```
+Embedded in: SystemDescriptor, SchemaResponse
+```
+
+| Field     | Type              | Description                                                                                           |
+| --------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `name`    | `String`          | Human-readable component name (e.g. `"Velocity"`).                                                    |
+| `type_id` | `ComponentTypeId` | Deterministic FNV-1a hash of `name` (see [Component Type Identity](#component-type-identity-fnv-1a)). |
+| `schema`  | `JSON Value`      | A JSON Schema object describing the component's fields and types.                                     |
+
+#### Schema Example
+
+```json
+{
+  "name": "Velocity",
+  "type_id": 8502879624764554621,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "x": { "type": "number", "format": "float" },
+      "y": { "type": "number", "format": "float" },
+      "z": { "type": "number", "format": "float" }
+    },
+    "required": ["x", "y", "z"]
+  }
+}
+```
+
+The `schema` field follows [JSON Schema](https://json-schema.org/) conventions.
+Non-Rust systems use it to correctly serialise/deserialise components to/from
+MessagePack.
+
+---
+
+### SchemaRequest
+
+Request component schemas from the coordinator's registry.
+
+```
+Subject: engine.schema.request
+Direction: Any → Coordinator
+```
+
+| Field   | Type          | Description                                     |
+| ------- | ------------- | ----------------------------------------------- |
+| `names` | `Vec<String>` | Component names to look up. Empty = return all. |
+
+---
+
+### SchemaResponse
+
+Response containing component schemas.
+
+```
+Subject: engine.schema.response
+Direction: Coordinator → Requester
+```
+
+| Field     | Type                   | Description            |
+| --------- | ---------------------- | ---------------------- |
+| `schemas` | `Vec<ComponentSchema>` | The requested schemas. |
 
 ---
 
@@ -671,3 +773,140 @@ see **`ARCHITECTURE.md` → Error Handling & Resilience**.
 | Data drain (`DataDone`) | 5 seconds    | System waits for all component shards from coordinator. |
 | Tick ack deadline       | Configurable | Coordinator waits for `tick.done` from all instances.   |
 | Heartbeat interval      | Periodic     | System instances report health to coordinator.          |
+
+---
+
+## Component Type Identity (FNV-1a)
+
+Every component type is identified by a `ComponentTypeId` — a `u64` derived
+from the component's human-readable **name** (e.g. `"Transform3D"`,
+`"Velocity"`) using the **FNV-1a 64-bit** hash algorithm. This produces a
+deterministic, language-neutral identifier that any implementation can compute.
+
+### Algorithm
+
+```
+Input:  name   — a UTF-8 string (the component's type name)
+Output: hash   — a u64 value
+
+hash ← 0xcbf29ce484222325            (FNV offset basis)
+for each byte b in name:
+    hash ← hash XOR b
+    hash ← hash × 0x00000100000001b3  (FNV prime, wrapping multiply)
+return hash
+```
+
+### Constants
+
+| Constant     | Value (hex)          | Value (decimal)      |
+| ------------ | -------------------- | -------------------- |
+| Offset basis | `0xcbf29ce484222325` | 14695981039346656037 |
+| Prime        | `0x00000100000001b3` | 1099511628211        |
+
+### Test Vectors
+
+| Name         | Expected `ComponentTypeId` (hex)      |
+| ------------ | ------------------------------------- |
+| `""` (empty) | `0xcbf29ce484222325` (offset basis)   |
+| `"Health"`   | Compute with reference implementation |
+| `"Velocity"` | Compute with reference implementation |
+
+The empty-string case is useful for verifying the offset basis is correct.
+Implementations should confirm they produce the offset basis for an empty
+input.
+
+### Reference Implementation (Rust)
+
+```rust
+const fn fnv1a_64(name: &str) -> u64 {
+    let bytes = name.as_bytes();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x00000100000001b3);
+        i += 1;
+    }
+    hash
+}
+```
+
+### Reference Implementation (Python)
+
+```python
+def fnv1a_64(name: str) -> int:
+    hash = 0xcbf29ce484222325
+    for byte in name.encode("utf-8"):
+        hash ^= byte
+        hash = (hash * 0x00000100000001b3) % (2**64)
+    return hash
+```
+
+### Naming Conventions
+
+- Component names should be **short, PascalCase identifiers** (e.g.
+  `"Transform3D"`, `"Velocity"`, `"Health"`).
+- The name is the **single source of truth** for identity. Two components with
+  the same name are considered the same type, regardless of their field layout.
+- All systems using a component must agree on the same name string. The
+  coordinator validates consistency when systems register conflicting schemas
+  for the same `ComponentTypeId`.
+
+---
+
+## Polyglot Encoding Conventions
+
+The wire protocol is designed to be implementable in **any language** that has
+a NATS client library and a MessagePack library. This section summarises the
+requirements for non-Rust implementations.
+
+### MessagePack Format
+
+All payloads use **map-encoded** (named) MessagePack. Each struct is serialised
+as a MessagePack map where keys are the struct field names as strings and
+values are the field values. This is self-describing and avoids positional
+ambiguity.
+
+Example encoding of `TickStart { tick_id: 42, dt: 0.016 }`:
+
+```
+MessagePack map:
+  "tick_id" → 42
+  "dt"      → 0.016
+```
+
+Array-encoded (positional) MessagePack is **not supported** on the wire.
+
+### Enum Encoding (Serde Externally Tagged)
+
+Rust enums are encoded using serde's **externally tagged** representation: a
+single-entry map where the key is the variant name.
+
+| Rust value                 | MessagePack map encoding |
+| -------------------------- | ------------------------ |
+| `QueryFilter::With(id)`    | `{"With": <id>}`         |
+| `QueryFilter::Without(id)` | `{"Without": <id>}`      |
+| `QueryFilter::Changed(id)` | `{"Changed": <id>}`      |
+| `Option::Some(v)`          | `v` (unwrapped)          |
+| `Option::None`             | `nil`                    |
+
+### Component Data
+
+Component values inside `ComponentShard.data` entries are each independently
+map-encoded MessagePack. For example, a `Health { current: 80.0, max: 100.0 }`
+component is encoded as:
+
+```
+MessagePack map:
+  "current" → 80.0
+  "max"     → 100.0
+```
+
+### Schema Discovery
+
+Non-Rust systems can discover component layouts at runtime by sending a
+`SchemaRequest` to `engine.schema.request` and receiving a `SchemaResponse`
+on `engine.schema.response`. The response contains `ComponentSchema` entries
+with JSON Schema definitions for each component type. See
+[ComponentSchema](#componentschema), [SchemaRequest](#schemarequest), and
+[SchemaResponse](#schemaresponse).

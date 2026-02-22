@@ -8,6 +8,7 @@ description = "NATS transport layer for the distributed ECS engine."
 async-nats = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -105,6 +105,25 @@ pub struct DataDone {
 
 // ── System management ───────────────────────────────────────────────────────
 
+/// Describes the schema of a component type for polyglot interoperability.
+///
+/// Systems include component schemas when they register, allowing the
+/// coordinator to build a shared registry. Non-Rust systems can query this
+/// registry to discover component layouts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentSchema {
+    /// Human-readable component name (e.g. `"Velocity"`).
+    /// This name is hashed with FNV-1a 64-bit to produce the
+    /// [`ComponentTypeId`].
+    pub name: String,
+    /// The deterministic [`ComponentTypeId`] (FNV-1a of `name`).
+    pub type_id: ComponentTypeId,
+    /// A JSON Schema object describing the component's fields and types.
+    /// This allows systems in any language to serialise/deserialise the
+    /// component correctly.
+    pub schema: serde_json::Value,
+}
+
 /// A system registers itself with the coordinator on startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemDescriptor {
@@ -115,6 +134,11 @@ pub struct SystemDescriptor {
     /// Unique instance identifier (UUID). Multiple instances of the same
     /// system share the `name` but have distinct `instance_id`s.
     pub instance_id: String,
+    /// Schemas for component types this system reads or writes.
+    /// The coordinator merges these into a global component registry and
+    /// validates consistency across systems.
+    #[serde(default)]
+    pub component_schemas: Vec<ComponentSchema>,
 }
 
 /// A system unregisters a specific instance from the coordinator.
@@ -168,6 +192,22 @@ pub struct QueryResponse {
     pub shards: Vec<ComponentShard>,
 }
 
+// ── Schema registry ─────────────────────────────────────────────────────────
+
+/// Request the schema for one or more component types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaRequest {
+    /// Component names to look up. If empty, returns all known schemas.
+    pub names: Vec<String>,
+}
+
+/// Response containing component schemas from the coordinator's registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaResponse {
+    /// The requested component schemas.
+    pub schemas: Vec<ComponentSchema>,
+}
+
 // ── NATS header keys ────────────────────────────────────────────────────────
 
 /// Standard NATS header keys used for routing metadata.
@@ -196,7 +236,7 @@ mod tests {
             tick_id: 42,
             dt: 0.016,
         };
-        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let bytes = rmp_serde::to_vec_named(&msg).unwrap();
         let restored: TickStart = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.tick_id, 42);
         assert!((restored.dt - 0.016).abs() < f64::EPSILON);
@@ -210,8 +250,18 @@ mod tests {
                 .read(ComponentTypeId(1))
                 .write(ComponentTypeId(2)),
             instance_id: "inst-001".to_string(),
+            component_schemas: vec![ComponentSchema {
+                name: "Velocity".to_string(),
+                type_id: ComponentTypeId::from_name("Velocity"),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "linear": { "type": "object" }
+                    }
+                }),
+            }],
         };
-        let bytes = rmp_serde::to_vec(&desc).unwrap();
+        let bytes = rmp_serde::to_vec_named(&desc).unwrap();
         let restored: SystemDescriptor = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.name, "physics");
         assert_eq!(restored.query.reads.len(), 1);
@@ -224,7 +274,7 @@ mod tests {
             tick_id: 99,
             instance_id: "inst-42".to_string(),
         };
-        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let bytes = rmp_serde::to_vec_named(&msg).unwrap();
         let restored: ChangesDone = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.tick_id, 99);
         assert_eq!(restored.instance_id, "inst-42");
@@ -233,7 +283,7 @@ mod tests {
     #[test]
     fn test_data_done_roundtrip() {
         let msg = DataDone { tick_id: 77 };
-        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let bytes = rmp_serde::to_vec_named(&msg).unwrap();
         let restored: DataDone = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.tick_id, 77);
     }
@@ -244,7 +294,7 @@ mod tests {
             component_types: vec![ComponentTypeId(1), ComponentTypeId(2)],
             component_data: vec![vec![1, 2, 3], vec![4, 5, 6]],
         };
-        let bytes = rmp_serde::to_vec(&msg).unwrap();
+        let bytes = rmp_serde::to_vec_named(&msg).unwrap();
         let restored: EntitySpawnRequest = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.component_types.len(), 2);
         assert_eq!(restored.component_data.len(), 2);

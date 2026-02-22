@@ -59,6 +59,7 @@ impl SystemRunner {
             name: self.config.name.clone(),
             query: self.config.query.clone(),
             instance_id: self.instance_id.clone(),
+            component_schemas: self.config.component_schemas.clone(),
         }
     }
 
@@ -269,5 +270,6 @@ mod tests {
         assert_eq!(desc.query.reads.len(), 1);
         assert_eq!(desc.query.writes.len(), 1);
         assert_eq!(desc.instance_id, runner.instance_id());
+        assert!(desc.component_schemas.is_empty());
     }
 }

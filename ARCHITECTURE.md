@@ -306,6 +306,51 @@ For the full envelope format, encoding rules, and header key reference, see
 
 ---
 
+## Polyglot Support
+
+The engine is designed so that **any language** with a NATS client and a
+MessagePack library can implement a system process. There is no requirement that
+systems are written in Rust — the wire protocol is the integration boundary.
+
+### Key Design Choices
+
+1. **Deterministic component identity** — `ComponentTypeId` is derived from a
+   component's human-readable name using the FNV-1a 64-bit hash algorithm.
+   This is a trivial function (5–10 lines in any language) with no dependency
+   on Rust's type system. See **`PROTOCOL.md` → Component Type Identity
+   (FNV-1a)** for the algorithm, constants, test vectors, and reference
+   implementations in Rust and Python.
+
+2. **Self-describing wire format** — All MessagePack payloads use **named
+   (map) encoding**, where struct fields are keyed by their string names.
+   This means a Python or TypeScript consumer can decode any message without
+   knowing field positions — it just reads fields by name. See
+   **`PROTOCOL.md` → Polyglot Encoding Conventions** for format details and
+   enum encoding rules.
+
+3. **Component schemas** — Systems can include JSON Schema definitions for
+   their component types when they register. The coordinator builds a shared
+   schema registry that any system can query at runtime. This allows non-Rust
+   systems to discover component layouts dynamically. See
+   **`PROTOCOL.md` → ComponentSchema** for the schema format.
+
+4. **No SDK required** — There is no mandatory client library or language-
+   specific SDK. A system only needs to: connect to NATS, publish a
+   `SystemDescriptor` message, subscribe to data and schedule subjects, and
+   respond with changed component shards. The full message exchange is
+   documented in **`PROTOCOL.md` → Sequences**.
+
+### What a Non-Rust System Must Do
+
+1. Compute `ComponentTypeId` values from component names using FNV-1a 64-bit.
+2. Encode and decode messages as named MessagePack (map format).
+3. Follow the NATS subject conventions and sentinel protocol documented in
+   `PROTOCOL.md`.
+4. (Optional) Include `ComponentSchema` entries in the `SystemDescriptor` to
+   contribute to the shared schema registry.
+
+---
+
 ## Component Storage
 
 ### Canonical (Coordinator)
@@ -417,8 +462,9 @@ For protocol-level error types (`NetError` variants) and timeout values, see
 | Crate        | Version | Purpose                                              |
 | ------------ | ------- | ---------------------------------------------------- |
 | `async-nats` | 0.38+   | NATS client                                          |
-| `rmp-serde`  | 1.x     | MessagePack serialisation                            |
+| `rmp-serde`  | 1.x     | MessagePack serialisation (named/map encoding)       |
 | `serde`      | 1.x     | Serialisation framework                              |
+| `serde_json` | 1.x     | JSON Schema for component schema registry            |
 | `tokio`      | 1.x     | Async runtime                                        |
 | `glam`       | 0.29+   | Math (already used via `engine_math`)                |
 | `tracing`    | 0.1     | Structured logging                                   |
@@ -460,6 +506,13 @@ For protocol-level error types (`NetError` variants) and timeout values, see
 
 7. **Fixed tick loop** — Deterministic simulation. Variable-rate rendering can
    be layered on top by interpolating between ticks.
+
+8. **Polyglot via protocol, not SDK** — Rather than requiring a language-
+   specific SDK or WASM compilation, the engine uses a well-defined wire
+   protocol as the integration boundary. Any language with a NATS client and
+   MessagePack library can implement a system. Component identity uses
+   language-neutral FNV-1a hashing, and component schemas use JSON Schema for
+   runtime layout discovery.
 
 ---
 

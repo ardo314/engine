@@ -75,7 +75,7 @@ impl SystemContext {
         let mut entities = Vec::with_capacity(components.len());
         let mut data = Vec::with_capacity(components.len());
         for (entity, value) in components {
-            if let Ok(bytes) = rmp_serde::to_vec(value) {
+            if let Ok(bytes) = rmp_serde::to_vec_named(value) {
                 entities.push(*entity);
                 data.push(bytes);
             }
@@ -142,7 +142,7 @@ mod tests {
         let shard = ComponentShard {
             component_type: Vel::component_type_id(),
             entities: vec![entity],
-            data: vec![rmp_serde::to_vec(&vel).unwrap()],
+            data: vec![rmp_serde::to_vec_named(&vel).unwrap()],
         };
 
         let mut ctx = SystemContext::new(1);
