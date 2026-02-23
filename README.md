@@ -9,7 +9,3 @@ You may not use, run, modify, or distribute this software without
 explicit written permission from the author.
 
 See the [LICENSE](LICENSE) file for details.
-
-## Editor
-
-## Engine
