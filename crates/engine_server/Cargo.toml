@@ -1,0 +1,16 @@
+[package]
+name = "engine_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+engine_schema = { path = "../engine_schema" }
+engine_ecs = { path = "../engine_ecs" }
+async-nats = "0.38"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
