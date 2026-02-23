@@ -1,0 +1,261 @@
+(* ================================================================== *)
+(* ECS IDL — Formal Grammar (EBNF)                                    *)
+(*                                                                      *)
+(* This grammar defines the complete syntax of .ecs files.              *)
+(* Notation follows ISO 14977 EBNF with the following conventions:      *)
+(*   { … }    — zero or more repetitions                                *)
+(*   [ … ]    — optional                                                *)
+(*   ( … )    — grouping                                                *)
+(*   |        — alternation                                             *)
+(*   "…"      — terminal string                                        *)
+(*   (* … *)  — comment                                                 *)
+(* ================================================================== *)
+
+
+(* ------------------------------------------------------------------ *)
+(* Top-level structure                                                  *)
+(* ------------------------------------------------------------------ *)
+
+file
+    = package_decl , { import } , { top_level_item } ;
+
+top_level_item
+    = type_alias
+    | enum_def
+    | variant_def
+    | flags_def
+    | record_def
+    | system_def
+    | phase_def
+    | world_def ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Package & imports                                                    *)
+(* ------------------------------------------------------------------ *)
+
+package_decl
+    = "package" , package_ref , NEWLINE ;
+
+package_ref
+    = namespace , ":" , ident , [ "@" , version ] ;
+
+namespace
+    = ident ;
+
+version
+    = INTEGER , "." , INTEGER , "." , INTEGER ;
+
+import
+    = "use" , package_ref , "." , "{" , import_list , "}" , NEWLINE ;
+
+import_list
+    = import_item , { "," , import_item } , [ "," ] ;
+
+import_item
+    = ident , [ "as" , ident ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Type aliases                                                         *)
+(* ------------------------------------------------------------------ *)
+
+type_alias
+    = "type" , ident , "=" , type_expr , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Type expressions                                                     *)
+(* ------------------------------------------------------------------ *)
+
+type_expr
+    = primitive_type
+    | parameterized_type
+    | ident ;
+
+primitive_type
+    = "bool" | "u8" | "u16" | "u32" | "u64"
+    | "i8"   | "i16" | "i32" | "i64"
+    | "f32"  | "f64"
+    | "string" | "bytes" ;
+
+parameterized_type
+    = ( "list" | "option" | "set" ) , "<" , type_expr , ">"
+    | "map" , "<" , type_expr , "," , type_expr , ">"
+    | "tuple" , "<" , type_expr , { "," , type_expr } , ">" ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Enums (no associated data — value type only)                        *)
+(* ------------------------------------------------------------------ *)
+
+enum_def
+    = "enum" , ident , "{" , enum_body , "}" ;
+
+enum_body
+    = ident , { "," , ident } , [ "," ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Variants (tagged unions — value type only)                          *)
+(* ------------------------------------------------------------------ *)
+
+variant_def
+    = "variant" , ident , "{" , variant_body , "}" ;
+
+variant_body
+    = variant_case , { "," , variant_case } , [ "," ] ;
+
+variant_case
+    = ident , [ "(" , type_list , ")" ] ;
+
+type_list
+    = type_expr , { "," , type_expr } ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Flags (bitfield — value type only)                                  *)
+(* ------------------------------------------------------------------ *)
+
+flags_def
+    = "flags" , ident , "{" , flags_body , "}" ;
+
+flags_body
+    = ident , { "," , ident } , [ "," ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Records (the sole entity-attachable type)                           *)
+(*                                                                      *)
+(*   - With fields: standard component                                  *)
+(*   - Empty body:  zero-sized tag                                      *)
+(*   - Semantically used as event: just a record on an event entity     *)
+(* ------------------------------------------------------------------ *)
+
+record_def
+    = "record" , ident , "{" , [ field_list ] , "}" ;
+
+field_list
+    = field , { "," , field } , [ "," ] ;
+
+field
+    = ident , ":" , type_expr ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Phases (tick groups)                                                 *)
+(* ------------------------------------------------------------------ *)
+
+phase_def
+    = "phase" , ident , "{" , [ phase_body ] , "}" ;
+
+phase_body
+    = phase_property , { "," , phase_property } , [ "," ] ;
+
+phase_property
+    = "hz" , ":" , INTEGER ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Systems                                                              *)
+(* ------------------------------------------------------------------ *)
+
+system_def
+    = "system" , ident , "{" , system_body , "}" ;
+
+system_body
+    = { system_item } ;
+
+system_item
+    = query_block
+    | system_property ;
+
+(* Query blocks — unnamed or named *)
+query_block
+    = "query" , [ ident ] , "{" , query_body , "}" ;
+
+query_body
+    = query_clause , { "," , query_clause } , [ "," ] ;
+
+query_clause
+    = query_clause_key , ":" , "[" , ident_list , "]" ;
+
+query_clause_key
+    = "read" | "write" | "optional" | "exclude" | "changed" ;
+
+(* System-level properties *)
+system_property
+    = system_property_key , ":" , system_property_value , "," ;
+
+system_property_key
+    = "phase" | "order_after" | "order_before" ;
+
+system_property_value
+    = ident                                 (* phase: fixed_update *)
+    | "[" , ident_list , "]" ;              (* order_after: [a, b] *)
+
+
+(* ------------------------------------------------------------------ *)
+(* Worlds                                                               *)
+(* ------------------------------------------------------------------ *)
+
+world_def
+    = "world" , ident , "{" , world_body , "}" ;
+
+world_body
+    = { world_item } ;
+
+world_item
+    = include_stmt
+    | type_alias
+    | enum_def
+    | variant_def
+    | flags_def
+    | record_def
+    | system_def
+    | phase_def ;
+
+include_stmt
+    = "include" , package_ref , [ "." , ident ] , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Common productions                                                   *)
+(* ------------------------------------------------------------------ *)
+
+ident_list
+    = ident , { "," , ident } , [ "," ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Lexical rules                                                        *)
+(* ------------------------------------------------------------------ *)
+
+ident
+    = LETTER_OR_UNDERSCORE , { LETTER_OR_UNDERSCORE | DIGIT } ;
+
+LETTER_OR_UNDERSCORE
+    = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+    | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+    | "u" | "v" | "w" | "x" | "y" | "z"
+    | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
+    | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T"
+    | "U" | "V" | "W" | "X" | "Y" | "Z"
+    | "_" ;
+
+DIGIT
+    = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+INTEGER
+    = DIGIT , { DIGIT } ;
+
+NEWLINE
+    = ? end of logical line ? ;
+
+(* Whitespace and comments are consumed by the lexer and not part of    *)
+(* the grammar productions.                                             *)
+(*                                                                      *)
+(*   LINE_COMMENT  = "//" , { any char except newline } , NEWLINE       *)
+(*   BLOCK_COMMENT = "/*" , { any char } , "*/"                        *)
+(*                                                                      *)
+(* Doc comments use "///" and are attached to the following item.       *)

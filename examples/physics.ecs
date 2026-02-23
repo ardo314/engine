@@ -1,0 +1,191 @@
+// Physics Domain
+//
+// Defines the records and systems for rigid-body physics simulation,
+// collision detection, and spatial dynamics.
+
+package engine:physics@0.1.0
+
+use engine:std.{vec3, quat, entity_id}
+
+// ---------------------------------------------------------------------------
+// Value types
+// ---------------------------------------------------------------------------
+
+enum body_type {
+    static_body,
+    dynamic,
+    kinematic,
+}
+
+variant shape {
+    sphere(f32),
+    box(vec3),
+    capsule(f32, f32),
+    mesh(list<vec3>),
+}
+
+flags collision_layer {
+    default,
+    terrain,
+    characters,
+    projectiles,
+    triggers,
+    debris,
+}
+
+// ---------------------------------------------------------------------------
+// Records — components
+// ---------------------------------------------------------------------------
+
+record transform {
+    position: vec3,
+    rotation: quat,
+    scale: vec3,
+}
+
+record velocity {
+    linear: vec3,
+    angular: vec3,
+}
+
+record acceleration {
+    linear: vec3,
+    angular: vec3,
+}
+
+record mass {
+    value: f32,
+    inverse: f32,
+}
+
+record rigid_body {
+    body_type: body_type,
+    restitution: f32,
+    friction: f32,
+    gravity_scale: f32,
+    linear_damping: f32,
+    angular_damping: f32,
+}
+
+record collider {
+    shape: shape,
+    layer: collision_layer,
+    mask: collision_layer,
+    is_trigger: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Records — tags
+// ---------------------------------------------------------------------------
+
+/// Prevents physics simulation from affecting this entity.
+record frozen {}
+
+/// Marks an entity as resting (sleeping) to skip simulation.
+record sleeping {}
+
+// ---------------------------------------------------------------------------
+// Records — events (attached to event entities)
+// ---------------------------------------------------------------------------
+
+/// Spawned when two colliders overlap. Consumed by response systems.
+record collision {
+    entity_a: entity_id,
+    entity_b: entity_id,
+    point: vec3,
+    normal: vec3,
+    penetration: f32,
+    impulse: f32,
+}
+
+/// Spawned when a collider enters a trigger volume.
+record trigger_enter {
+    trigger: entity_id,
+    visitor: entity_id,
+}
+
+/// Spawned when a collider exits a trigger volume.
+record trigger_exit {
+    trigger: entity_id,
+    visitor: entity_id,
+}
+
+// ---------------------------------------------------------------------------
+// Phases
+// ---------------------------------------------------------------------------
+
+phase fixed_update {
+    hz: 60,
+}
+
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// Integrates acceleration into velocity.
+system apply_forces {
+    query {
+        read: [acceleration, mass],
+        write: [velocity],
+        exclude: [frozen, sleeping],
+    }
+    phase: fixed_update,
+}
+
+/// Integrates velocity into position and rotation.
+system integrate_velocity {
+    query {
+        read: [velocity],
+        write: [transform],
+        exclude: [frozen, sleeping],
+    }
+    phase: fixed_update,
+    order_after: [apply_forces],
+}
+
+/// Detects overlapping colliders and spawns collision event entities.
+system collision_detect {
+    query {
+        read: [transform, collider],
+        exclude: [frozen],
+    }
+    phase: fixed_update,
+    order_after: [integrate_velocity],
+}
+
+/// Resolves collision responses — adjusts velocity and position.
+system collision_resolve {
+    query collisions {
+        read: [collision],
+    }
+    query bodies {
+        read: [rigid_body, mass, collider],
+        write: [velocity, transform],
+        exclude: [frozen],
+    }
+    phase: fixed_update,
+    order_after: [collision_detect],
+}
+
+/// Handles trigger enter/exit events.
+system trigger_process {
+    query enters {
+        read: [trigger_enter],
+    }
+    query exits {
+        read: [trigger_exit],
+    }
+    phase: fixed_update,
+    order_after: [collision_detect],
+}
+
+/// Puts entities with near-zero velocity to sleep.
+system sleep_detection {
+    query {
+        read: [velocity, rigid_body],
+        exclude: [frozen, sleeping],
+        changed: [velocity],
+    }
+    phase: fixed_update,
+    order_after: [collision_resolve],
+}

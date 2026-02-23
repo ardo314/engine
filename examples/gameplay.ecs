@@ -1,0 +1,264 @@
+// Gameplay Domain
+//
+// Defines records and systems for a simple action-RPG. Demonstrates
+// cross-package imports from engine:std and engine:physics.
+
+package my_game:gameplay@0.1.0
+
+use engine:std.{vec3, entity_id, color}
+use engine:physics.{
+    transform,
+    velocity,
+    collision,
+    frozen,
+}
+
+// ---------------------------------------------------------------------------
+// Value types
+// ---------------------------------------------------------------------------
+
+enum team {
+    player,
+    enemy,
+    neutral,
+}
+
+enum damage_type {
+    physical,
+    fire,
+    ice,
+    lightning,
+}
+
+flags status_flags {
+    poisoned,
+    burning,
+    stunned,
+    shielded,
+    hasted,
+}
+
+variant loot {
+    gold(u32),
+    item(entity_id),
+    experience(u32),
+}
+
+// ---------------------------------------------------------------------------
+// Records — components
+// ---------------------------------------------------------------------------
+
+record health {
+    current: f32,
+    max: f32,
+    regen_per_second: f32,
+}
+
+record character {
+    name: string,
+    team: team,
+    level: u32,
+}
+
+record status_effects {
+    active: status_flags,
+    remaining_seconds: f32,
+}
+
+record inventory {
+    items: list<entity_id>,
+    capacity: u32,
+}
+
+record input_state {
+    move_direction: vec3,
+    look_direction: vec3,
+    primary_action: bool,
+    secondary_action: bool,
+}
+
+record spawn_point {
+    position: vec3,
+    radius: f32,
+    team: team,
+}
+
+record lifetime {
+    remaining: f32,
+}
+
+record follow_target {
+    target: entity_id,
+    speed: f32,
+    stop_distance: f32,
+}
+
+record projectile {
+    damage: f32,
+    damage_type: damage_type,
+    owner: entity_id,
+    pierce_count: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Records — tags
+// ---------------------------------------------------------------------------
+
+record player {}
+record dead {}
+record invulnerable {}
+record despawn_queued {}
+
+// ---------------------------------------------------------------------------
+// Records — events (attached to event entities)
+// ---------------------------------------------------------------------------
+
+record damage_taken {
+    target: entity_id,
+    amount: f32,
+    damage_type: damage_type,
+    source: option<entity_id>,
+}
+
+record entity_killed {
+    entity: entity_id,
+    killer: option<entity_id>,
+}
+
+record item_picked_up {
+    picker: entity_id,
+    item: entity_id,
+}
+
+record loot_dropped {
+    position: vec3,
+    drop: loot,
+}
+
+// ---------------------------------------------------------------------------
+// Phases
+// ---------------------------------------------------------------------------
+
+phase fixed_update {
+    hz: 60,
+}
+
+phase update {}
+
+phase late_update {}
+
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
+
+/// Reads player input and sets velocity accordingly.
+system player_movement {
+    query {
+        read: [player, input_state, character],
+        write: [velocity],
+        exclude: [dead, frozen],
+    }
+    phase: fixed_update,
+}
+
+/// Moves AI entities toward their follow target.
+system ai_follow {
+    query followers {
+        read: [follow_target, character],
+        write: [velocity],
+        exclude: [dead, frozen],
+    }
+    query targets {
+        read: [transform],
+    }
+    phase: fixed_update,
+    order_after: [player_movement],
+}
+
+/// When a collision involves a projectile, spawns a damage_taken event entity.
+system projectile_hit {
+    query collisions {
+        read: [collision],
+    }
+    query projectiles {
+        read: [projectile, transform],
+    }
+    phase: update,
+}
+
+/// Applies incoming damage events to health components.
+system apply_damage {
+    query {
+        read: [damage_taken],
+    }
+    query targets {
+        read: [character],
+        write: [health],
+        exclude: [invulnerable, dead],
+    }
+    phase: update,
+    order_after: [projectile_hit],
+}
+
+/// Regenerates health over time.
+system health_regen {
+    query {
+        write: [health],
+        exclude: [dead],
+        changed: [health],
+    }
+    phase: update,
+}
+
+/// Checks for entities whose health reached zero and marks them dead.
+system check_death {
+    query {
+        read: [health, character],
+        exclude: [dead],
+        changed: [health],
+    }
+    phase: update,
+    order_after: [apply_damage, health_regen],
+}
+
+/// Ticks status effects and removes expired ones.
+system tick_status_effects {
+    query {
+        write: [status_effects],
+        exclude: [dead],
+    }
+    phase: update,
+}
+
+/// Ticks entity lifetimes and queues despawn when expired.
+system tick_lifetime {
+    query {
+        write: [lifetime],
+        exclude: [despawn_queued],
+    }
+    phase: late_update,
+}
+
+/// Handles loot drops from killed entities.
+system drop_loot {
+    query {
+        read: [entity_killed],
+    }
+    query sources {
+        read: [transform, inventory],
+    }
+    phase: late_update,
+    order_after: [check_death],
+}
+
+/// Handles item pickup when a player collides with a loot entity.
+system item_pickup {
+    query {
+        read: [collision],
+    }
+    query players {
+        read: [player],
+        write: [inventory],
+    }
+    phase: late_update,
+}

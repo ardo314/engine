@@ -1,0 +1,68 @@
+// Engine Standard Types
+//
+// Built-in mathematical and identity types that all implementations must provide.
+// These are records and can be attached to entities, but are primarily intended
+// as field types within other records.
+
+package engine:std@0.1.0
+
+// ---------------------------------------------------------------------------
+// Scalar aliases
+// ---------------------------------------------------------------------------
+
+/// Stable entity identifier.
+type entity_id = u64
+
+// ---------------------------------------------------------------------------
+// Vector types
+// ---------------------------------------------------------------------------
+
+record vec2 {
+    x: f32,
+    y: f32,
+}
+
+record vec3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+record vec4 {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+}
+
+// ---------------------------------------------------------------------------
+// Matrix types
+// ---------------------------------------------------------------------------
+
+/// Column-major 4×4 matrix.
+record mat4 {
+    cols: tuple<vec4, vec4, vec4, vec4>,
+}
+
+// ---------------------------------------------------------------------------
+// Rotation
+// ---------------------------------------------------------------------------
+
+/// Unit quaternion representing a rotation.
+record quat {
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+}
+
+// ---------------------------------------------------------------------------
+// Color
+// ---------------------------------------------------------------------------
+
+record color {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+}
